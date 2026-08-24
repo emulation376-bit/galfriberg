@@ -31,7 +31,18 @@ const feedback: CharacterGuessFeedback = {
     difficulty: { value: 'normal', level: 'wrong', parts: [] },
     clothes: { value: '', level: 'wrong', parts: [] },
     role: { value: '', level: 'wrong', parts: [] },
-    hair: { value: 'Brown', level: 'wrong', parts: [] },
+    hair: {
+      value: 'Straight、Long、Black',
+      level: 'wrong',
+      parts: [
+        { name: 'Straight', matched: false },
+        { name: 'Long', matched: false },
+        { name: 'Spiky Bangs', matched: false },
+        { name: 'Waist Length+', matched: false },
+        { name: 'Blunt Bangs', matched: false },
+        { name: 'Black', matched: true },
+      ],
+    },
     body: { value: '', level: 'wrong', parts: [] },
     eyes: { value: '', level: 'wrong', parts: [] },
     voiceActor: { value: '', level: 'wrong', parts: [] },
@@ -48,5 +59,6 @@ describe('CharacterGuessBoard portrait column', () => {
     expect(worksCell).not.toHaveClass('correct');
     expect(worksCell?.querySelector('.staff-chip.matched')).toHaveTextContent('时空轮回');
     expect(worksCell?.querySelectorAll('.staff-chip')).toHaveLength(2);
+    expect(document.querySelector('td:nth-child(9)')).toHaveTextContent('黑色');
   });
 });

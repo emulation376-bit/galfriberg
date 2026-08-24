@@ -11,6 +11,9 @@ const GROUP_ORDER = [
   { key: 'eyes', group: 'Eyes' },
 ] as const;
 const MAX_TAGS_PER_CELL = 5;
+const HAIR_COLOR_TRAITS = new Set([
+  'Black', 'Blond', 'Blue', 'Brown', 'Green', 'Grey', 'Pink', 'Red', 'Violet', 'White',
+]);
 
 function FeedbackArrow({ hint }: { hint?: 'higher' | 'lower' }) {
   if (!hint) return null;
@@ -71,7 +74,14 @@ function Cell({
     ? attr.level === 'correct' ? 'correct' : ''
     : attr.level;
   if (Array.isArray(attr.parts)) {
-    const visibleParts = attr.parts.slice(0, MAX_TAGS_PER_CELL);
+    const colorParts = group === 'Hair'
+      ? attr.parts.filter((part) => HAIR_COLOR_TRAITS.has(part.name))
+      : [];
+    const otherParts = group === 'Hair'
+      ? attr.parts.filter((part) => !HAIR_COLOR_TRAITS.has(part.name))
+      : attr.parts;
+    const orderedParts = group === 'Hair' ? [...colorParts, ...otherParts] : attr.parts;
+    const visibleParts = orderedParts.slice(0, Math.max(MAX_TAGS_PER_CELL, colorParts.length));
     const omittedCount = attr.parts.length - visibleParts.length;
     return (
       <td className={staffCell ? 'staff-cell' : `character-cell ${cellClass}`}>
