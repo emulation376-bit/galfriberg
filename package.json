@@ -1,0 +1,32 @@
+{
+  "name": "csgofriberg",
+  "version": "1.0.0",
+  "packageManager": "pnpm@11.13.1",
+  "private": true,
+  "description": "旮一把 - Galgame / 视觉小说作品与角色猜测游戏",
+  "scripts": {
+    "dev": "concurrently -n server,client -c blue,green \"pnpm --filter server dev\" \"pnpm --filter client dev\"",
+    "build": "pnpm build:pow && pnpm --filter client build && pnpm --filter server build",
+    "start": "pnpm --filter server start",
+    "test": "pnpm --filter server test && pnpm --filter client test",
+    "test:client": "pnpm --filter client test",
+    "migrate": "pnpm --filter server migrate",
+    "seed": "pnpm --filter server seed",
+    "data:build": "python scripts/xlsx_to_base.py && pnpm --filter server build-import-csv",
+    "data:import": "pnpm --filter server import-all",
+    "characters:import": "pnpm --filter server import-vndb-characters",
+    "bgm:characters": "pnpm --filter server import-bgm-character-names",
+    "name:parts": "python scripts/sync_character_name_parts.py",
+    "mzh:characters": "pnpm --filter server fetch-mzh-characters",
+    "characters:merge": "pnpm --filter server merge-characters",
+    "create-admin": "pnpm --filter server create-admin",
+    "build:pow": "node scripts/build-pow.mjs",
+    "loadtest": "pnpm --filter server loadtest",
+    "postinstall": "node scripts/install-better-sqlite3.mjs",
+    "images:import": "pnpm --filter server import-ymgal-character-images",
+    "characters:seed": "python scripts/gen_characters_json.py"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.2"
+  }
+}

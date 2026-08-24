@@ -1,0 +1,245 @@
+import { screen } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
+import { Route } from 'react-router-dom';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+import type { GuessFeedback, GameInfo, RoomState } from '../types';
+import { renderAtRoute } from '../test/render';
+import MultiLobby from './MultiLobby';
+import MultiRoom from './MultiRoom';
+
+const socket = vi.hoisted(() => ({
+  on: vi.fn(),
+  off: vi.fn(),
+  emit: vi.fn(),
+  connect: vi.fn(),
+  disconnect: vi.fn(),
+}));
+
+vi.mock('../api/socket', () => ({ getSocket: () => socket }));
+
+const answer: GameInfo = {
+  id: 1,
+  title: 'Answer',
+  titleCn: '答案',
+  releaseYear: 2010,
+  company: 'Company',
+  isR18: false,
+  scenarioWriter: 'Scenario',
+  musicComposer: 'Music',
+  artist: 'Artist',
+  voiceActor: 'Voice',
+  tags: ['悬疑'],
+  bgmScore: 8.5,
+};
+
+function guess(gameId: number, title: string, correct = false): GuessFeedback {
+  const attribute = { value: 'value', level: correct ? 'correct' as const : 'wrong' as const };
+  return {
+    gameId,
+    title,
+    correct,
+    attributes: {
+      releaseYear: attribute,
+      company: attribute,
+      isR18: attribute,
+      scenarioWriter: attribute,
+      musicComposer: attribute,
+      artist: attribute,
+      voiceActor: attribute,
+      tags: attribute,
+      bgmScore: attribute,
+      isSeries: attribute,
+      length: attribute,
+    },
+  };
+}
+
+const room: RoomState = {
+  id: 'ABCDE',
+  hostKey: 'g:me',
+  status: 'finished',
+  matchmaking: false,
+  readyCheckEndsAt: null,
+  dbType: 'easy',
+  boType: 3,
+  rematchAllowed: false,
+  rematchInvite: null,
+  allowSpectators: true,
+  anonymous: false,
+  round: 2,
+  roundId: 2,
+  stateVersion: 8,
+  winsNeeded: 2,
+  maxGuesses: 8,
+  roundEndsAt: null,
+  matchStartsAt: null,
+  spectatorCount: 0,
+  players: [
+    { key: 'g:me', name: 'Me', ready: true, connected: true, score: 2, guessCount: 0, guesses: [] },
+    { key: 'g:opponent', name: 'Opponent', ready: true, connected: true, score: 0, guessCount: 0, guesses: [] },
+  ],
+  roundResult: null,
+  matchResult: {
+    winnerKey: 'g:me',
+    reason: 'score',
+    answer: {
+      title: answer.title,
+      titleCn: answer.titleCn,
+      releaseYear: answer.releaseYear,
+      company: answer.company,
+      isR18: answer.isR18,
+      scenarioWriter: answer.scenarioWriter,
+      musicComposer: answer.musicComposer,
+      artist: answer.artist,
+      voiceActor: answer.voiceActor,
+      bgmScore: answer.bgmScore,
+    },
+  },
+  matchReplay: {
+    id: 'record',
+    mode: 'easy',
+    boType: 3,
+    finishedAt: '2026-07-26T00:00:00.000Z',
+    result: 'won',
+    me: { score: 2 },
+    opponent: { displayId: 'Opponent', score: 0 },
+    rounds: [
+      {
+        round: 1,
+        reason: 'guessed',
+        winner: 'me',
+        answer,
+        me: { guesses: [guess(2, 'My Round 1')] },
+        opponent: { guesses: [guess(3, 'Opponent Round 1')] },
+      },
+      {
+        round: 2,
+        reason: 'guessed',
+        winner: 'me',
+        answer,
+        me: { guesses: [guess(4, 'My Round 2')] },
+        opponent: { guesses: [guess(5, 'Opponent Round 2')] },
+      },
+    ],
+  },
+};
+
+describe('MultiRoom replay', () => {
+  beforeEach(() => {
+    socket.on.mockReset();
+    socket.off.mockReset();
+    socket.connect.mockReset();
+    socket.disconnect.mockReset();
+    socket.emit.mockReset();
+    socket.emit.mockImplementation((event: string, ...args: unknown[]) => {
+      const ack = args.at(-1);
+      if (event === 'room:sync' && typeof ack === 'function') {
+        ack({ room, selfKey: 'g:me', serverNow: Date.now() });
+      }
+    });
+  });
+
+  it('shows completed match rounds in the existing boards instead of a replay modal', async () => {
+    const user = userEvent.setup();
+    renderAtRoute(<MultiRoom />, { route: '/multi/room', path: '/multi/room' });
+
+    await user.click(await screen.findByRole('button', { name: '查看对局' }));
+
+    expect(screen.queryByRole('dialog', { name: '多人对局回放' })).not.toBeInTheDocument();
+    expect(screen.getByText('第 1 / 2 轮')).toBeInTheDocument();
+    expect(screen.getByText('Opponent Round 1')).toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: '下一轮' }));
+    expect(screen.getByText('第 2 / 2 轮')).toBeInTheDocument();
+    expect(screen.getByText('Opponent Round 2')).toBeInTheDocument();
+    expect(screen.queryByText('Opponent Round 1')).not.toBeInTheDocument();
+  });
+
+  it('lets the matchmaking host ready up instead of showing a host start button', async () => {
+    const user = userEvent.setup();
+    const readyRoom: RoomState = {
+      ...room,
+      status: 'waiting',
+      matchmaking: true,
+      readyCheckEndsAt: Date.now() + 30_000,
+      round: 0,
+      roundId: 0,
+      matchResult: null,
+      matchReplay: undefined,
+      players: room.players.map((player) => ({ ...player, ready: false, score: 0 })),
+    };
+    socket.emit.mockImplementation((event: string, ...args: unknown[]) => {
+      const ack = args.at(-1);
+      if (event === 'room:sync' && typeof ack === 'function') {
+        ack({ room: readyRoom, selfKey: 'g:me', serverNow: Date.now() });
+      }
+      if (event === 'room:player-stats' && typeof ack === 'function') {
+        ack({
+          playerKey: 'g:opponent',
+          displayId: 'Opponent',
+          stats: {
+            single: { games: 0, wins: 0, losses: 0, winRate: 0, avgGuesses: null, bestGuesses: null },
+            character: { games: 0, wins: 0, losses: 0, winRate: 0, avgGuesses: null, bestGuesses: null },
+            multi: { games: 1, wins: 1, losses: 0, winRate: 1, recentAverageWinningGuesses: 3.4, recentMatches: [] },
+          },
+        });
+      }
+      if (event === 'room:ready' && typeof ack === 'function') ack({ ok: true });
+    });
+
+    renderAtRoute(<MultiRoom />, { route: '/multi/room', path: '/multi/room' });
+    const ready = await screen.findByRole('button', { name: '准备' });
+    expect(screen.getByText('对方近 10 场胜局平均猜测')).toBeInTheDocument();
+    expect(await screen.findByText('3.4')).toHaveClass('matchmaking-average-low');
+    expect(screen.queryByRole('button', { name: '开始对局' })).not.toBeInTheDocument();
+    await user.click(ready);
+    expect(socket.emit).toHaveBeenCalledWith('room:ready', { ready: true }, expect.any(Function));
+  });
+
+  it('warns before leaving a ready check and shows the returned cooldown in the lobby', async () => {
+    const user = userEvent.setup();
+    const serverNow = Date.now();
+    let left = false;
+    const readyRoom: RoomState = {
+      ...room,
+      status: 'waiting',
+      matchmaking: true,
+      readyCheckEndsAt: serverNow + 30_000,
+      round: 0,
+      roundId: 0,
+      matchResult: null,
+      matchReplay: undefined,
+      players: room.players.map((player) => ({ ...player, ready: false, score: 0 })),
+    };
+    socket.emit.mockImplementation((event: string, ...args: unknown[]) => {
+      const ack = args.at(-1);
+      if (event === 'room:sync' && typeof ack === 'function') {
+        ack(left
+          ? { code: 'NOT_IN_ROOM' }
+          : { room: readyRoom, selfKey: 'g:me', serverNow });
+      }
+      if (event === 'room:leave' && typeof ack === 'function') {
+        left = true;
+        ack({ ok: true, retryAt: serverNow + 10_000, serverNow });
+      }
+    });
+
+    renderAtRoute(<MultiRoom />, {
+      route: '/multi/room',
+      path: '/multi/room',
+      extraRoutes: <Route path="/multi" element={<MultiLobby />} />,
+    });
+
+    await user.click(await screen.findByRole('button', { name: '离开房间' }));
+    expect(await screen.findByRole('alertdialog', { name: '退出匹配准备？' })).toHaveTextContent(
+      '退出后可能会受到匹配惩罚。'
+    );
+    expect(socket.emit).not.toHaveBeenCalledWith('room:leave', {}, expect.any(Function));
+
+    await user.click(screen.getByRole('button', { name: '确认退出' }));
+
+    const cooldownButton = await screen.findByRole('button', { name: /冷却 \d+ 秒/ });
+    expect(cooldownButton).toBeDisabled();
+    expect(screen.queryByText(/已退出准备/)).not.toBeInTheDocument();
+  });
+});

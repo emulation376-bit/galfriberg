@@ -1,0 +1,267 @@
+.character-game-content {
+  display: grid;
+  gap: 18px;
+  max-width: var(--content-max);
+  margin: 0 auto;
+  padding: 18px var(--page-inline) 120px;
+}
+
+.character-clue-panel,
+.character-guess-panel {
+  min-width: 0;
+  padding: 18px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--card) 86%, transparent);
+}
+
+.character-clue-panel h2,
+.character-guess-panel h2 {
+  margin: 0 0 14px;
+  font-size: 1rem;
+  letter-spacing: 0;
+}
+
+.character-clue-row {
+  display: grid;
+  grid-template-columns: minmax(6.5rem, 0.34fr) minmax(0, 1fr);
+  align-items: start;
+  gap: 10px;
+  min-width: 0;
+  padding: 7px 0;
+  border-bottom: 1px dashed var(--border);
+}
+
+.character-clue-row:last-child {
+  border-bottom: 0;
+}
+
+.character-clue-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-sec);
+  font-size: 0.88rem;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.character-clue-value {
+  color: var(--text);
+  font-weight: 700;
+}
+
+.character-tag-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-width: 0;
+}
+
+.character-tag {
+  display: inline-flex;
+  align-items: center;
+  max-width: 100%;
+  padding: 3px 9px;
+  border: 1px solid var(--border-strong);
+  border-radius: 999px;
+  background: var(--primary-soft);
+  color: var(--primary-strong);
+  font-size: 0.82rem;
+  font-style: normal;
+  line-height: 1.35;
+  white-space: normal;
+  word-break: break-word;
+}
+
+.character-tag-muted {
+  background: var(--card-soft);
+  color: var(--text-sec);
+}
+
+.character-table {
+  table-layout: fixed;
+}
+
+.character-table th:nth-child(1),
+.character-table td:nth-child(1) {
+  width: 10%;
+}
+
+.character-table th:nth-child(2),
+.character-table td:nth-child(2) {
+  width: 8%;
+}
+
+.character-table th:nth-child(3),
+.character-table td:nth-child(3) {
+  width: 15%;
+}
+
+.character-table th:nth-child(4),
+.character-table td:nth-child(4) {
+  width: 8%;
+}
+
+.character-table th:nth-child(5),
+.character-table td:nth-child(5) {
+  width: 4%;
+}
+
+.character-table th:nth-child(6),
+.character-table td:nth-child(6) {
+  width: 5%;
+}
+
+.character-table th:nth-child(n + 7):nth-child(-n + 9),
+.character-table td:nth-child(n + 7):nth-child(-n + 9) {
+  width: 12%;
+}
+
+.character-table th:nth-child(10),
+.character-table td:nth-child(10) {
+  width: 6%;
+}
+
+.character-table th:nth-child(11),
+.character-table td:nth-child(11) {
+  width: 8%;
+}
+
+.character-table td:nth-child(5) {
+  font-size: 0.95rem;
+  font-weight: 700;
+}
+
+.character-table td:nth-child(6) {
+  font-weight: 700;
+}
+
+.character-table td.character-cover-cell {
+  position: relative;
+  min-width: 56px;
+  padding: 0;
+  vertical-align: middle;
+}
+
+.character-cover {
+  position: absolute;
+  top: 0;
+  left: 0;
+  display: block;
+  width: 100%;
+  height: 100%;
+  border-radius: 6px;
+  background: var(--card-soft);
+  object-fit: cover;
+  object-position: center top;
+}
+
+.character-cover-empty {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  width: 100%;
+  height: 100%;
+  border-radius: 6px;
+  box-sizing: border-box;
+  color: var(--text-light);
+}
+
+.character-table td.character-cell {
+  padding: 7px 5px;
+  font-size: 0.78rem;
+  line-height: 1.3;
+  overflow: hidden;
+  border: none;
+  box-shadow: none;
+}
+
+.character-table td.character-cell.wrong,
+.character-table td.wrong {
+  background: var(--card);
+  color: var(--text);
+}
+
+.character-table td.character-game-cell {
+  white-space: normal;
+  word-break: break-word;
+  background: transparent;
+  border: none;
+  box-shadow: none;
+}
+
+
+.character-game-title {
+  display: block;
+  font-size: 0.8rem;
+  line-height: 1.35;
+}
+
+.character-game-omitted {
+  color: var(--text-light);
+}
+
+.character-table td.release-range-cell {
+  white-space: normal;
+  text-align: center;
+  vertical-align: middle;
+}
+
+.character-table .release-header-line {
+  display: block;
+  line-height: 1.3;
+}
+
+.release-range-cell .release-year {
+  display: block;
+  width: fit-content;
+  margin: 12px auto;
+  font-weight: 700;
+  font-size: 1.06rem;
+  line-height: 1.4;
+}
+
+.release-range-cell .release-year.correct {
+  color: var(--correct);
+}
+
+.release-range-cell .release-year.close {
+  color: var(--close);
+}
+
+.release-range-cell .release-year.wrong {
+  color: var(--text-sec);
+}
+
+
+.character-answer-card {
+  width: min(42rem, calc(100vw - 24px));
+}
+
+.character-answer-details {
+  display: grid;
+  gap: 0;
+  margin-top: 14px;
+}
+
+@media (max-width: 760px) {
+  .character-game-content {
+    padding: 12px 12px 120px;
+  }
+
+  .character-clue-panel,
+  .character-guess-panel {
+    padding: 12px;
+  }
+
+  .character-clue-row {
+    grid-template-columns: 1fr;
+    gap: 4px;
+  }
+
+  .character-table {
+    min-width: 960px;
+  }
+}

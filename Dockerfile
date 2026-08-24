@@ -1,0 +1,58 @@
+# syntax=docker/dockerfile:1.7
+
+ARG RUNTIME_IMAGE=gcr.m.daocloud.io/distroless/nodejs22-debian12:nonroot
+
+FROM node:22-bookworm-slim AS build
+
+ARG RESOURCE_VERSION=""
+
+ENV PNPM_HOME=/pnpm
+ENV PATH=$PNPM_HOME:$PATH
+ENV RESOURCE_VERSION=$RESOURCE_VERSION
+ENV COREPACK_NPM_REGISTRY=https://registry.npmmirror.com
+ENV npm_config_registry=https://registry.npmmirror.com
+WORKDIR /workspace
+
+RUN corepack enable
+
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
+COPY client/package.json client/package.json
+COPY server/package.json server/package.json
+COPY scripts scripts
+
+RUN sed -i 's|https://registry.npmjs.org|https://registry.npmmirror.com|g' pnpm-lock.yaml \
+ && pnpm install --frozen-lockfile
+
+COPY pow-wasm pow-wasm
+COPY client client
+COPY server server
+
+RUN pnpm build \
+ && pnpm --filter server deploy --prod --no-optional --legacy /runtime/server
+
+FROM ${RUNTIME_IMAGE} AS runtime
+
+ARG OCI_SOURCE=""
+ARG OCI_REVISION=""
+ARG OCI_VERSION=""
+
+LABEL org.opencontainers.image.title="csgofriberg" \
+      org.opencontainers.image.description="PostgreSQL-only csgofriberg game server and web client" \
+      org.opencontainers.image.source=$OCI_SOURCE \
+      org.opencontainers.image.revision=$OCI_REVISION \
+      org.opencontainers.image.version=$OCI_VERSION
+
+ENV NODE_ENV=production \
+    DB_CLIENT=pg \
+    PORT=3000
+
+WORKDIR /app
+
+COPY --from=build --chown=nonroot:nonroot /runtime/server/node_modules ./server/node_modules
+COPY --from=build --chown=nonroot:nonroot /workspace/server/dist ./server/dist
+COPY --from=build --chown=nonroot:nonroot /workspace/client/dist ./client/dist
+
+USER nonroot
+EXPOSE 3000
+
+CMD ["server/dist/index.js"]
