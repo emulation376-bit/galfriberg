@@ -1,26 +1,22 @@
 # Galgame 数据怎么改
 
-这份文档记录这个项目里的 Galgame 数据是怎么维护的
-简单说：**数据以 `scripts/游戏名.xlsx` 为准，CSV 和数据库都从它生成**，平时不要直接去改 CSV 或 SQLite。
+这份文档记录这个项目里的 Galgame 数据是怎么维护的（其实是我拿来给AI读的）
 
-## 先记住这几件事
+## 关键
 
 1. `scripts/游戏名.xlsx` 是唯一真源，现在有 309 款游戏。
 2. 正常链路：
    `游戏名.xlsx` → `scripts/sync_xlsx_to_csv.py` → `scripts/galgame_import.csv` → `import-all` → SQLite。
-3. 游戏匹配尽量用 `vndb_id`，不要靠标题。按标题匹配容易踩坑，比如 Re：LieF 被匹配成 Re-leaf、天神乱漫匹配不上。
-4. 每次大改前先备份：把要动的文件复制到 `.devlogs/`，名字起得能看出改了什么。
+3. 游戏匹配尽量用 `vndb_id`，不要靠标题。按标题匹配容易匹配不上
 
-### `游戏名.xlsx` 是从哪来的
+
+### `游戏名.xlsx` 的获取
 
 它不是脚本自动生成的，而是从月幕 galgame 的导出文件整理出来的手动版本：
 
-1. `scripts/galgame_ymgal_v2.xlsx`：从月幕导出的原始游戏列表，sheet 叫 `galgame_ymgal`，约 343 行。
-2. `scripts/xlsx_to_base.py`：只把原始导出里的游戏名、中文名、别名、评分人数、tag、rank 转成 `galgame_base.csv`，作为后续匹配和补数据的基础。
-3. 人工在 `scripts/游戏名.xlsx` 里维护完整字段：补 `vndb_id`、脚本/原画/音乐/声优、难度、系列作、时长、tag 等，并修正导出里不可靠的内容。
+1. `利用bgm评价数筛选游戏，然后导出游戏名去ymgal数据库中匹配，得到的游戏名、中文名、别名、评分人数、rank后转成xlsx。
+2. 人工在 `xlsx` 里维护完整字段：补 `vndb_id`、脚本/原画/音乐/声优、难度、系列作、时长、tag 等，并修正导出里不可靠的内容。
 4. `sync_xlsx_to_csv.py` 只读取 `游戏名.xlsx` 生成 CSV，数据库最终也以它为准。
-
-所以以后改数据就改 `游戏名.xlsx`，不要用 `galgame_ymgal_v2.xlsx` 重新生成覆盖它。
 
 ## 日常操作
 
@@ -101,12 +97,6 @@ DELETE FROM game_titles WHERE title = '游戏名';
 
 现在白名单有 37 条，以 xlsx 文件为准。几个容易记错的口径：
 
-- **同性恋**：g97/g1986（百合）、g98/g2002（BL）、g1470/g3084/g3085/g490/g2076（同性恋角色）。只算主角/女主级，双性恋、跨性别、非二元、伪娘都不算。
-- **民俗**：g319/g537/g1011/g548/g344/g2318/g1525。
-- **疾病**：g167/g281。
-- 配角级标签一律不用。历史上因为给配角打同性恋、伪娘、跨性别标签踩过坑，后来都剔了；女主级可以保留，比如石头门琉华子线。
-- 新增标签时全表出现率要 ≤50%，按 309 款算就是 ≤154 款。
-
 ## Staff 数据
 
 ### 现在自动从 VNDB 取
@@ -175,51 +165,4 @@ DELETE FROM game_titles WHERE title = '游戏名';
 
 注意：`characters:import` 会整表重建角色相关数据，所以游戏数据更新后要重跑；`characters:seed` 目前导出的是基础角色数据，不含萌百增强字段。
 
-## 常用命令
 
-| 命令 | 作用 |
-|---|---|
-| `pnpm data:build` | xlsx_to_base.py + build-import-csv |
-| `pnpm data:import` | import-all（CSV → DB） |
-| `pnpm --filter server migrate` / `seed` | 建表迁移 / 补种子数据 |
-| `pnpm --filter server create-admin` | 创建或重置管理员 |
-| `pnpm dev` / `pnpm build` / `pnpm start` / `pnpm test` | 开发、构建、启动、测试 |
-| `pnpm --filter server maintenance` / `loadtest` | 维护脚本 / 负载测试 |
-
-其他脚本：
-
-- `python scripts/sync_xlsx_to_csv.py`：xlsx → CSV 主链路
-- `python scripts/apply_vndb_tags_score.py`：按白名单和 VNDB 评分重算 tag
-- `python scripts/extract_vndb_tags.py` / `extract_bangumi_tags.py`：从 VNDB / Bangumi 提取标签
-- `python scripts/gen_games_json.py`：import CSV → `seeds/games.json`（Docker 种子）
-- `pnpm build:pow`：编译 PoW WASM
-- `pnpm postinstall`：自动复制 `vendor/better_sqlite3.node` 到 node_modules
-
-## 已知的坑
-
-1. **标题匹配会错配**，能走 vndb_id 就走 vndb_id。
-2. **Excel 占用文件**时写入会报 `PermissionError: [Errno 13]`，先把 Excel 关掉。
-3. **PowerShell 里直接写中文脚本**容易乱码，中文字面量尽量放 `.py` / `.cjs` 文件里。
-4. **品牌合并已经做过一轮**：AER LLC./Re,AER LLC.→Acacia，Citrus→Navel，TOKYOTOON→HARUKAZE，AKABEiSOFT3、hibiki works→AKABEiSOFT2，Team GrisGris→MAGES.。以后新增品牌尽量别再用子品牌。
-5. **品牌分隔符只认「、」**，逗号和斜杠是公司名的一部分，不能拆。
-6. **删数据库前先备份**，SQLite 直接复制到 `.devlogs/` 或 `server/data/*.bak`。
-
-## 验证
-
-- 行数要一致：xlsx 有名行 = CSV 行数 = DB `game_titles` 行数（当前 309）。
-- 抽查几个字段：`SELECT title, company, tags, is_series, length_minutes FROM game_titles WHERE ...`
-- 检查标签残留：xlsx、CSV、DB 里都不该出现已经删掉的标签。
-- 前端改完要重启 dev 或重新构建，内存缓存才会刷新。
-
-## 运行时怎么存
-
-- 本地开发用 SQLite：`server/data/csgofriberg.sqlite3`
-- 生产用 PostgreSQL，Docker 编排在 `compose.yaml`
-- 进行中的单人对局、房间、限流这些放 Redis；Redis 挂掉时单人局会退回进程内 Map
-- 作品库、staff 别名、角色 clue 都有启动时缓存；角色立绘走 `/img/character/:id`，YmGal 优先、VNDB 兜底，缓存写在 `server/data/image-cache`（生产容器里是 `/tmp/image-cache`）
-
-## 还没做 / 想做的
-
-1. 自定义池目前是进程内 Map，多实例部署时跨实例开局会失败，应该改成 Redis key + TTL。
-2. 导入链路现在是 Python + TypeScript 两套工具，之后想收敛成一条 `pnpm data:sync` 命令，顺便输出一致性校验报告。
-3. 角色 clue 缓存已经在启动时全量预载，之后如果角色数据继续变大，可以再考虑更细的失效策略。
