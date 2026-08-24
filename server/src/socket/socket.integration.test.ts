@@ -150,7 +150,7 @@ describe.skipIf(!redisReady)('multiplayer socket integration', () => {
       expect(await emit(socket, 'match:rematch-respond', { accept: 'yes' }))
         .toEqual({ code: 'VALIDATION_FAILED' });
       expect(await emit(socket, 'game:guess', {
-        playerId: '1',
+        gameId: '1',
         roundId: 1,
         eventId: 'short',
       })).toEqual({ code: 'VALIDATION_FAILED' });
@@ -228,15 +228,15 @@ describe.skipIf(!redisReady)('multiplayer socket integration', () => {
     const spectator = await connect(withPowCookie(`csgofriberg_guest=${guestToken(spectatorKey)}`));
     const outsider = await connect(withPowCookie(`csgofriberg_guest=${guestToken(outsiderKey)}`));
     try {
-      const [target] = await db('players').select('id').limit(1);
+      const [target] = await db('game_titles').select('id').limit(1);
       await db('games').insert([
         {
           session_id: `${historyPrefix}-single-win`,
           guest_key: keyB,
-          target_player_id: target.id,
+          target_game_id: target.id,
           mode: 'easy',
           guesses: JSON.stringify([target.id]),
-          first_guess_player_id: target.id,
+          first_guess_game_id: target.id,
           status: 'won',
           guess_count: 2,
           finished_at: db.fn.now(),
@@ -244,10 +244,10 @@ describe.skipIf(!redisReady)('multiplayer socket integration', () => {
         {
           session_id: `${historyPrefix}-single-loss`,
           guest_key: keyB,
-          target_player_id: target.id,
+          target_game_id: target.id,
           mode: 'normal',
           guesses: JSON.stringify([target.id]),
-          first_guess_player_id: target.id,
+          first_guess_game_id: target.id,
           status: 'lost',
           guess_count: 6,
           finished_at: db.fn.now(),
@@ -256,7 +256,7 @@ describe.skipIf(!redisReady)('multiplayer socket integration', () => {
       for (const [index, won] of [true, false].entries()) {
         const replay = [{
           round: 1,
-          targetPlayerId: target.id,
+          targetGameId: target.id,
           winnerKey: won ? `g:${keyB}` : `g:${keyA}`,
           reason: 'guessed',
           guessesByPlayer: {
@@ -314,6 +314,14 @@ describe.skipIf(!redisReady)('multiplayer socket integration', () => {
             winRate: 0.5,
             avgGuesses: 2,
             bestGuesses: 2,
+          },
+          character: {
+            games: 0,
+            wins: 0,
+            losses: 0,
+            winRate: 0,
+            avgGuesses: null,
+            bestGuesses: null,
           },
           multi: {
             games: 2,
@@ -456,7 +464,7 @@ describe.skipIf(!redisReady)('multiplayer socket integration', () => {
     const a = await connect(withPowCookie(`csgofriberg_guest=${token(keyA)}`));
     const b = await connect(withPowCookie(`csgofriberg_guest=${token(keyB)}`));
     try {
-      const [target] = await db('players').select('id').limit(1);
+      const [target] = await db('game_titles').select('id').limit(1);
       const [inserted] = await db('match_records').insert({
         room_id: historyRoomId,
         db_type: 'easy',
@@ -465,7 +473,7 @@ describe.skipIf(!redisReady)('multiplayer socket integration', () => {
         finish_reason: 'score',
         replay: JSON.stringify([{
           round: 1,
-          targetPlayerId: target.id,
+          targetGameId: target.id,
           winnerKey: `g:${keyA}`,
           reason: 'guessed',
           guessesByPlayer: {
@@ -553,18 +561,18 @@ describe.skipIf(!redisReady)('multiplayer socket integration', () => {
       expect(synced.room.roundId).toBe(1);
       const room = await redis()!.get(redisKey(`room:${created.room.id}`));
       const stored = JSON.parse(room!);
-      const targetId = stored.targetPlayerId;
+      const targetId = stored.targetGameId;
       const stale = await emit(a, 'game:guess', {
-        playerId: targetId,
+        gameId: targetId,
         roundId: synced.room.roundId - 1,
         eventId: `stale-${stamp}-0001`,
       });
       expect(stale.code).toBe('STALE_ROUND');
       const eventId = `valid-${stamp}-0001`;
       const results = await Promise.all([
-        emit(a, 'game:guess', { playerId: targetId, roundId: synced.room.roundId, eventId }),
-        emit(a, 'game:guess', { playerId: targetId, roundId: synced.room.roundId, eventId }),
-        emit(b, 'game:guess', { playerId: targetId, roundId: synced.room.roundId, eventId: `valid-${stamp}-0002` }),
+        emit(a, 'game:guess', { gameId: targetId, roundId: synced.room.roundId, eventId }),
+        emit(a, 'game:guess', { gameId: targetId, roundId: synced.room.roundId, eventId }),
+        emit(b, 'game:guess', { gameId: targetId, roundId: synced.room.roundId, eventId: `valid-${stamp}-0002` }),
       ]);
       expect(results.every((result) => result.feedback === undefined)).toBe(true);
       results.filter((result) => !result.code).forEach((result) => {
@@ -638,7 +646,7 @@ describe.skipIf(!redisReady)('multiplayer socket integration', () => {
       const originalRecordId = active!.recordId;
       const matchOverEvent = onceEvent(a, 'match:over');
       await emit(a, 'game:guess', {
-        playerId: active!.targetPlayerId,
+        gameId: active!.targetGameId,
         roundId: active!.round,
         eventId: `rematch-finish-${stamp}`,
       });
@@ -740,11 +748,11 @@ describe.skipIf(!redisReady)('multiplayer socket integration', () => {
 
       expect((await emit(a, 'game:start')).ok).toBe(true);
       const active = await getRoom(created.room.id);
-      expect(active?.targetPlayerId).toEqual(expect.any(Number));
+      expect(active?.targetGameId).toEqual(expect.any(Number));
       const eventId = `patch-guess-${stamp}`;
       const matchOverPromise = onceEvent(a, 'match:over');
       const guessAck = await emit(a, 'game:guess', {
-        playerId: active!.targetPlayerId,
+        gameId: active!.targetGameId,
         roundId: active!.round,
         eventId,
       });
@@ -833,14 +841,14 @@ describe.skipIf(!redisReady)('multiplayer socket integration', () => {
       const stored = JSON.parse(
         (await redis()!.get(redisKey(`room:${created.room.id}`)))!
       );
-      const [wrongGuess] = await db('players')
-        .whereNot({ id: stored.targetPlayerId })
+      const [wrongGuess] = await db('game_titles')
+        .whereNot({ id: stored.targetGameId })
         .select('id')
         .limit(1);
       const opponentEvent = onceEvent(b, 'game:guess:applied');
       const spectatorEvent = onceEvent(spectator, 'game:guess:applied');
       const guessed = await emit(a, 'game:guess', {
-        playerId: wrongGuess.id,
+        gameId: wrongGuess.id,
         roundId: syncedA.room.roundId,
         eventId: `hidden-${stamp}-0001`,
       });
@@ -851,18 +859,18 @@ describe.skipIf(!redisReady)('multiplayer socket integration', () => {
       expect(hiddenUpdate.feedback).toMatchObject({ hidden: true, correct: false });
       expect(hiddenUpdate.eventId).toBeUndefined();
       expect(hiddenUpdate.guessCount).toBeUndefined();
-      expect(hiddenUpdate.feedback).not.toHaveProperty('playerId');
-      expect(hiddenUpdate.feedback).not.toHaveProperty('nickname');
-      expect(hiddenUpdate.feedback.attributes).not.toHaveProperty('region');
-      expect(hiddenUpdate.feedback.attributes.team).not.toHaveProperty('value');
+      expect(hiddenUpdate.feedback).not.toHaveProperty('gameId');
+      expect(hiddenUpdate.feedback).not.toHaveProperty('title');
+      expect(hiddenUpdate.feedback.attributes.company).not.toHaveProperty('value');
+      expect(hiddenUpdate.feedback.attributes.isR18).not.toHaveProperty('value');
 
       const spectatorUpdate = await spectatorEvent;
-      expect(spectatorUpdate.feedback.playerId).toBe(wrongGuess.id);
+      expect(spectatorUpdate.feedback.gameId).toBe(wrongGuess.id);
       expect(spectatorUpdate.eventId).toBeUndefined();
       expect(spectatorUpdate.guessCount).toBeUndefined();
-      expect(spectatorUpdate.feedback.nickname).toEqual(expect.any(String));
-      expect(spectatorUpdate.feedback.attributes).not.toHaveProperty('region');
-      expect(spectatorUpdate.feedback.attributes.team).toHaveProperty('value');
+      expect(spectatorUpdate.feedback.title).toEqual(expect.any(String));
+      expect(spectatorUpdate.feedback.attributes.company).toHaveProperty('value');
+      expect(spectatorUpdate.feedback.attributes.isR18).toHaveProperty('value');
 
       const syncedB = await emit(b, 'room:sync');
       expect(syncedB.room.anonymous).toBe(true);
@@ -872,9 +880,9 @@ describe.skipIf(!redisReady)('multiplayer socket integration', () => {
       ]);
       const opponentView = syncedB.room.players.find((player: any) => player.key === `g:${keyA}`);
       expect(opponentView.guesses[0]).toMatchObject({ hidden: true, correct: false });
-      expect(opponentView.guesses[0]).not.toHaveProperty('playerId');
-      expect(opponentView.guesses[0]).not.toHaveProperty('nickname');
-      expect(opponentView.guesses[0].attributes.nationality).not.toHaveProperty('value');
+      expect(opponentView.guesses[0]).not.toHaveProperty('gameId');
+      expect(opponentView.guesses[0]).not.toHaveProperty('title');
+      expect(opponentView.guesses[0].attributes.company).not.toHaveProperty('value');
 
       const spectatorSync = await emit(spectator, 'room:sync');
       expect(spectatorSync.room.players.map((player: any) => player.name)).toEqual([
@@ -884,13 +892,13 @@ describe.skipIf(!redisReady)('multiplayer socket integration', () => {
       const spectatorView = spectatorSync.room.players.find(
         (player: any) => player.key === `g:${keyA}`
       );
-      expect(spectatorView.guesses[0].playerId).toBe(wrongGuess.id);
-      expect(spectatorView.guesses[0].nickname).toEqual(expect.any(String));
-      expect(spectatorView.guesses[0].attributes.nationality).toHaveProperty('value');
+      expect(spectatorView.guesses[0].gameId).toBe(wrongGuess.id);
+      expect(spectatorView.guesses[0].title).toEqual(expect.any(String));
+      expect(spectatorView.guesses[0].attributes.company).toHaveProperty('value');
 
       const roundOverPromise = onceEvent(b, 'round:over');
       await emit(b, 'game:guess', {
-        playerId: stored.targetPlayerId,
+        gameId: stored.targetGameId,
         roundId: syncedA.room.roundId,
         eventId: `hidden-${stamp}-0002`,
       });
@@ -899,9 +907,9 @@ describe.skipIf(!redisReady)('multiplayer socket integration', () => {
       const revealedOpponent = roundOver.room.players.find(
         (player: any) => player.key === `g:${keyA}`
       );
-      expect(revealedOpponent.guesses[0].playerId).toBe(wrongGuess.id);
-      expect(revealedOpponent.guesses[0].nickname).toEqual(expect.any(String));
-      expect(revealedOpponent.guesses[0].attributes.nationality).toHaveProperty('value');
+      expect(revealedOpponent.guesses[0].gameId).toBe(wrongGuess.id);
+      expect(revealedOpponent.guesses[0].title).toEqual(expect.any(String));
+      expect(revealedOpponent.guesses[0].attributes.company).toHaveProperty('value');
     } finally {
       a.disconnect();
       b.disconnect();
@@ -923,20 +931,20 @@ describe.skipIf(!redisReady)('multiplayer socket integration', () => {
       expect((await emit(a, 'game:start')).ok).toBe(true);
       const synced = await emit(a, 'room:sync');
       const stored = JSON.parse((await redis()!.get(redisKey(`room:${created.room.id}`)))!);
-      const wrongGuesses = await db('players')
-        .whereNot({ id: stored.targetPlayerId })
+      const wrongGuesses = await db('game_titles')
+        .whereNot({ id: stored.targetGameId })
         .select('id')
         .limit(2);
 
       const firstAppliedPromise = onceEvent(a, 'game:guess:applied');
       const first = await emit(a, 'game:guess', {
-        playerId: wrongGuesses[0].id,
+        gameId: wrongGuesses[0].id,
         roundId: synced.room.roundId,
         eventId: `script-${stamp}-0001`,
       });
       const firstApplied = await firstAppliedPromise;
       expect(first.feedback).toBeUndefined();
-      expect(firstApplied.feedback.playerId).toBe(wrongGuesses[0].id);
+      expect(firstApplied.feedback.gameId).toBe(wrongGuesses[0].id);
       expect(first).not.toHaveProperty('room');
       const identityA = `g:script-a-${stamp}`;
       const snapshotAfterFirst = JSON.parse(
@@ -966,7 +974,7 @@ describe.skipIf(!redisReady)('multiplayer socket integration', () => {
 
       await redis()!.sendCommand(['SCRIPT', 'FLUSH']);
       const coolingDown = await emit(a, 'game:guess', {
-        playerId: wrongGuesses[1].id,
+        gameId: wrongGuesses[1].id,
         roundId: synced.room.roundId,
         eventId: `script-${stamp}-0002`,
       });
@@ -977,25 +985,25 @@ describe.skipIf(!redisReady)('multiplayer socket integration', () => {
 
       const secondAppliedPromise = onceEvent(a, 'game:guess:applied');
       const second = await emit(a, 'game:guess', {
-        playerId: wrongGuesses[1].id,
+        gameId: wrongGuesses[1].id,
         roundId: synced.room.roundId,
         eventId: `script-${stamp}-0003`,
       });
       const secondApplied = await secondAppliedPromise;
       expect(second.feedback).toBeUndefined();
-      expect(secondApplied.feedback.playerId).toBe(wrongGuesses[1].id);
+      expect(secondApplied.feedback.gameId).toBe(wrongGuesses[1].id);
       expect(second).not.toHaveProperty('room');
 
       for (let index = 4; index <= 12; index += 1) {
         const repeated = await emit(a, 'game:guess', {
-          playerId: wrongGuesses[1].id,
+          gameId: wrongGuesses[1].id,
           roundId: synced.room.roundId,
           eventId: `script-${stamp}-${String(index).padStart(4, '0')}`,
         });
         expect(repeated.code).toBe('ALREADY_GUESSED');
       }
       const limited = await emit(a, 'game:guess', {
-        playerId: wrongGuesses[1].id,
+        gameId: wrongGuesses[1].id,
         roundId: synced.room.roundId,
         eventId: `script-${stamp}-0013`,
       });
@@ -1277,11 +1285,11 @@ describe.skipIf(!redisReady)('multiplayer socket integration', () => {
         room.round = 2;
         room.replayRounds = [{
           round: 1,
-          targetPlayerId: room.targetPlayerId!,
+          targetGameId: room.targetGameId!,
           winnerKey: winner.key,
           reason: 'guessed',
           guessesByPlayer: {
-            [`g:${keyA}`]: [room.targetPlayerId!],
+            [`g:${keyA}`]: [room.targetGameId!],
             [`g:${keyB}`]: [],
           },
         }];
@@ -1296,7 +1304,7 @@ describe.skipIf(!redisReady)('multiplayer socket integration', () => {
       const matchOverPromise = onceEvent(a, 'match:over');
       const opponentMatchOverPromise = onceEvent(b, 'match:over');
       const guessed = await emit(a, 'game:guess', {
-        playerId: stored.targetPlayerId,
+        gameId: stored.targetGameId,
         roundId: before.room.roundId,
         eventId: `result-${stamp}-0001`,
       });
@@ -1509,7 +1517,7 @@ describe.skipIf(!redisReady)('multiplayer socket integration', () => {
       await emit(a, 'game:start');
       const firstStored = JSON.parse((await redis()!.get(redisKey(`room:${first.room.id}`)))!);
       await emit(a, 'game:guess', {
-        playerId: firstStored.targetPlayerId,
+        gameId: firstStored.targetGameId,
         roundId: firstStored.round,
         eventId: `switch-${stamp}-first`,
       });
