@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1.7
 
-ARG RUNTIME_IMAGE=gcr.m.daocloud.io/distroless/nodejs22-debian12:nonroot
+ARG RUNTIME_IMAGE=gcr.io/distroless/nodejs22-debian12:nonroot
 
 FROM node:22-bookworm-slim AS build
 

@@ -81,6 +81,7 @@ jobs:
             OCI_REVISION=${{ github.sha }}
             OCI_VERSION=${{ steps.meta.outputs.version }}
             RESOURCE_VERSION=${{ steps.resource_version.outputs.value }}
+            RUNTIME_IMAGE=gcr.io/distroless/nodejs22-debian12:nonroot
           cache-from: type=gha
           cache-to: type=gha,mode=max
           provenance: mode=max
