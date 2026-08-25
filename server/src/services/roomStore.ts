@@ -5,7 +5,12 @@ import { config } from '../config';
 import { logTransientError } from './transientLog';
 import { DIFFICULTY_LEVELS } from '../difficulties';
 
-export type BoType = 1 | 3 | 5 | 7;
+export type BoType = 0 | 1 | 3 | 5 | 7;
+
+/** 0 = 聚会（casual）赛制：无限回合、不按比分结束比赛 */
+export function isCasualBo(bo: number): boolean {
+  return bo === 0;
+}
 export type DbType = string;
 export type RoomStatus = 'waiting' | 'starting' | 'playing' | 'round_over' | 'finished';
 const MATCHMAKING_ENTRY_TTL_MS = 300_000;
@@ -40,6 +45,8 @@ export interface StoredSpectator extends StoredIdentity {
 export interface StoredRoundResult {
   round: number;
   winnerKey: string | null;
+  /** 聚会赛制下可能双方都猜中；普通赛制为单个 winnerKey 或 null */
+  winnerKeys?: string[] | null;
   reason: 'guessed' | 'exhausted' | 'timeout' | 'surrender';
   matchOver: boolean;
   nextRoundAt: number | null;
@@ -322,6 +329,7 @@ export type ApplyRoomGuessResult =
       matchOver: boolean;
       revision: number;
       playerKeys: string[];
+      casual?: boolean;
       room?: StoredRoom;
     }
   | {
@@ -401,6 +409,42 @@ if lastGuessAt > 0 and tonumber(ARGV[9]) - lastGuessAt < minGuessInterval then
     retryAfterMs=minGuessInterval - (tonumber(ARGV[9]) - lastGuessAt)
   })
 end
+local casual = tonumber(meta[6] or 1) == 0
+local function playerDone(candidateKey, candidateGuessCount)
+  if tonumber(candidateGuessCount or 0) >= tonumber(ARGV[7]) then return true end
+  if redis.call('HGET', KEYS[9], 'surrender:' .. tostring(meta[3]) .. ':' .. candidateKey) then
+    return true
+  end
+  local doneRaw = redis.call('HGET', KEYS[8], candidateKey) or '[]'
+  local doneOk, doneGuesses = pcall(cjson.decode, doneRaw)
+  if doneOk and type(doneGuesses) == 'table' then
+    for _, g in ipairs(doneGuesses) do
+      if g.correct == true then return true end
+    end
+  end
+  return false
+end
+if casual and playerDone(identity, #guesses) then
+  return cjson.encode({kind='error', code='PLAYER_ROUND_DONE'})
+end
+local function anyPlayerCorrect()
+  local states = redis.call('HGETALL', KEYS[7])
+  for index = 2, #states, 2 do
+    local stateOk, candidate = pcall(cjson.decode, states[index])
+    if stateOk then
+      local gRaw = redis.call('HGET', KEYS[8], candidate.key) or '[]'
+      local gOk, gGuesses = pcall(cjson.decode, gRaw)
+      if gOk and type(gGuesses) == 'table' then
+        for _, g in ipairs(gGuesses) do
+          if g.correct == true then return true end
+        end
+      end
+    end
+  end
+  return false
+end
+-- 聚会赛制：先猜中者得 2 分，后猜中者得 1 分（在插入新猜测前判定）
+local firstCorrect = casual and not anyPlayerCorrect()
 local feedback = cjson.decode(ARGV[8])
 table.insert(guesses, feedback)
 local guessCount = #guesses
@@ -408,18 +452,46 @@ redis.call('HSET', KEYS[8], identity, cjson.encode(guesses))
 redis.call('HSET', KEYS[9], eventKey, guessCount - 1)
 player.guessCount = guessCount
 player.lastGuessAt = tonumber(ARGV[9])
-if feedback.correct == true then player.score = tonumber(player.score or 0) + 1 end
+if feedback.correct == true then player.score = tonumber(player.score or 0) + (firstCorrect and 2 or 1) end
 redis.call('HSET', KEYS[7], identity, cjson.encode(player))
-local allExhausted = true
 local playerStates = redis.call('HGETALL', KEYS[7])
+local allDone = true
+local winnerKeys = {}
 for index = 2, #playerStates, 2 do
   local stateOk, candidate = pcall(cjson.decode, playerStates[index])
-  if not stateOk or tonumber(candidate.guessCount or 0) < tonumber(ARGV[7]) then
-    allExhausted = false
+  if not stateOk then
+    allDone = false
     break
   end
+  if not playerDone(candidate.key, candidate.guessCount) then
+    allDone = false
+  else
+    local doneRaw = redis.call('HGET', KEYS[8], candidate.key) or '[]'
+    local doneOk, doneGuesses = pcall(cjson.decode, doneRaw)
+    if doneOk and type(doneGuesses) == 'table' then
+      for _, g in ipairs(doneGuesses) do
+        if g.correct == true then
+          table.insert(winnerKeys, candidate.key)
+          break
+        end
+      end
+    end
+  end
 end
-local shouldFinish = feedback.correct == true or allExhausted
+local shouldFinish
+if casual then
+  shouldFinish = allDone
+else
+  local allExhausted = true
+  for index = 2, #playerStates, 2 do
+    local stateOk, candidate = pcall(cjson.decode, playerStates[index])
+    if not stateOk or tonumber(candidate.guessCount or 0) < tonumber(ARGV[7]) then
+      allExhausted = false
+      break
+    end
+  end
+  shouldFinish = feedback.correct == true or allExhausted
+end
 local matchOver = false
 local status = meta[1]
 local roundEndsAt = meta[4] or ''
@@ -427,22 +499,44 @@ local nextRoundAt = ''
 local roundResult = ''
 local matchResult = ''
 if shouldFinish then
-  matchOver = feedback.correct == true and tonumber(player.score or 0) >= math.ceil(tonumber(meta[6] or 1) / 2)
   roundEndsAt = ''
-  if matchOver then
-    status = 'finished'
-    matchResult = cjson.encode({winnerKey=identity, reason='score'})
-  else
+  if casual then
     status = 'round_over'
     nextRoundAt = tostring(tonumber(ARGV[9]) + tonumber(ARGV[10]))
+    local anyCorrect = #winnerKeys > 0
+    local anySurrender = false
+    for index = 2, #playerStates, 2 do
+      local stateOk, candidate = pcall(cjson.decode, playerStates[index])
+      if stateOk and redis.call('HGET', KEYS[9], 'surrender:' .. tostring(meta[3]) .. ':' .. candidate.key) then
+        anySurrender = true
+        break
+      end
+    end
+    roundResult = cjson.encode({
+      round=tonumber(meta[3]),
+      winnerKey=anyCorrect and winnerKeys[1] or cjson.null,
+      winnerKeys=anyCorrect and winnerKeys or cjson.empty_array,
+      reason=anyCorrect and 'guessed' or (anySurrender and 'surrender' or 'exhausted'),
+      matchOver=false,
+      nextRoundAt=tonumber(nextRoundAt)
+    })
+  else
+    matchOver = feedback.correct == true and tonumber(player.score or 0) >= math.ceil(tonumber(meta[6] or 1) / 2)
+    if matchOver then
+      status = 'finished'
+      matchResult = cjson.encode({winnerKey=identity, reason='score'})
+    else
+      status = 'round_over'
+      nextRoundAt = tostring(tonumber(ARGV[9]) + tonumber(ARGV[10]))
+    end
+    roundResult = cjson.encode({
+      round=tonumber(meta[3]),
+      winnerKey=feedback.correct == true and identity or cjson.null,
+      reason=feedback.correct == true and 'guessed' or 'exhausted',
+      matchOver=matchOver,
+      nextRoundAt=nextRoundAt == '' and cjson.null or tonumber(nextRoundAt)
+    })
   end
-  roundResult = cjson.encode({
-    round=tonumber(meta[3]),
-    winnerKey=feedback.correct == true and identity or cjson.null,
-    reason=feedback.correct == true and 'guessed' or 'exhausted',
-    matchOver=matchOver,
-    nextRoundAt=nextRoundAt == '' and cjson.null or tonumber(nextRoundAt)
-  })
 end
 local revision = tonumber(meta[5] or 0) + 1
 local now = tonumber(ARGV[9])
@@ -469,7 +563,7 @@ local playerKeys = redis.call('HKEYS', KEYS[7])
 return cjson.encode({
   kind='applied', feedback=feedback, round=tonumber(meta[3]),
   correct=feedback.correct == true, shouldFinish=shouldFinish, matchOver=matchOver,
-  revision=revision, playerKeys=playerKeys
+  revision=revision, playerKeys=playerKeys, casual=casual
 })
 `;
 
@@ -556,16 +650,38 @@ export async function applyRoomGuess(input: ApplyRoomGuessInput): Promise<ApplyR
           retryAfterMs: input.minGuessIntervalMs - elapsed,
         };
       }
+      const casual = isCasualBo(room.boType);
+      const surrenderKey = (key: string) => `surrender:${room.round}:${key}`;
+      const playerDone = (candidate: StoredPlayer) =>
+        candidate.guesses.some((guess) => guess.correct)
+        || room.eventResults[surrenderKey(candidate.key)] === 1;
+      if (casual && playerDone(player)) {
+        return { kind: 'error', code: 'PLAYER_ROUND_DONE' };
+      }
+      // 聚会赛制：先猜中者得 2 分，后猜中者得 1 分
+      const firstCorrect = input.feedback.correct && casual && !room.players.some(
+        (candidate) => candidate.guesses.some((guess) => guess.correct)
+      );
       player.guesses.push(input.feedback);
       player.lastGuessAt = now;
       room.eventResults[eventKey] = player.guesses.length - 1;
-      const shouldFinish = input.feedback.correct || room.players.every(
-        (candidate) => candidate.guesses.length >= input.maxGuesses
+      if (input.feedback.correct) player.score += firstCorrect ? 2 : 1;
+      const allDone = room.players.every(
+        (candidate) =>
+          candidate.guesses.some((guess) => guess.correct)
+          || candidate.guesses.length >= input.maxGuesses
+          || room.eventResults[surrenderKey(candidate.key)] === 1
       );
+      const shouldFinish = casual
+        ? allDone
+        : input.feedback.correct || room.players.every(
+          (candidate) => candidate.guesses.length >= input.maxGuesses
+        );
       let matchOver = false;
       if (shouldFinish) {
-        if (input.feedback.correct) player.score += 1;
-        matchOver = input.feedback.correct && player.score >= Math.ceil(room.boType / 2);
+        matchOver = !casual
+          && input.feedback.correct
+          && player.score >= Math.ceil(room.boType / 2);
         room.roundEndsAt = null;
         if (matchOver) {
           room.status = 'finished';
@@ -579,13 +695,30 @@ export async function applyRoomGuess(input: ApplyRoomGuessInput): Promise<ApplyR
           room.status = 'round_over';
           room.nextRoundAt = Date.now() + input.nextRoundDelayMs;
         }
-        room.roundResult = {
-          round: room.round,
-          winnerKey: input.feedback.correct ? input.identity : null,
-          reason: input.feedback.correct ? 'guessed' : 'exhausted',
-          matchOver,
-          nextRoundAt: room.nextRoundAt,
-        };
+        if (casual) {
+          const winnerKeys = room.players
+            .filter((candidate) => candidate.guesses.some((guess) => guess.correct))
+            .map((candidate) => candidate.key);
+          const anySurrender = room.players.some(
+            (candidate) => room.eventResults[surrenderKey(candidate.key)] === 1
+          );
+          room.roundResult = {
+            round: room.round,
+            winnerKey: winnerKeys[0] ?? null,
+            winnerKeys,
+            reason: winnerKeys.length ? 'guessed' : (anySurrender ? 'surrender' : 'exhausted'),
+            matchOver: false,
+            nextRoundAt: room.nextRoundAt,
+          };
+        } else {
+          room.roundResult = {
+            round: room.round,
+            winnerKey: input.feedback.correct ? input.identity : null,
+            reason: input.feedback.correct ? 'guessed' : 'exhausted',
+            matchOver,
+            nextRoundAt: room.nextRoundAt,
+          };
+        }
       }
       return {
         kind: 'applied',
@@ -596,6 +729,7 @@ export async function applyRoomGuess(input: ApplyRoomGuessInput): Promise<ApplyR
         matchOver,
         revision: room.revision,
         playerKeys: room.players.map((candidate) => candidate.key),
+        casual,
         room,
       };
     }, (value) => value.kind === 'applied');
@@ -1063,11 +1197,18 @@ export async function withRoomLock<T>(
 }
 
 function syncResultRoomVersion<T>(result: T, room: StoredRoom): void {
-  if (!result || typeof result !== 'object' || !('room' in result)) return;
+  if (!result || typeof result !== 'object') return;
   const snapshot = (result as { room?: StoredRoom }).room;
-  if (!snapshot) return;
-  snapshot.revision = room.revision;
-  snapshot.updatedAt = room.updatedAt;
+  if (snapshot) {
+    snapshot.revision = room.revision;
+    snapshot.updatedAt = room.updatedAt;
+  }
+  // 本地(非 Redis)路径下 handler 返回的 revision 是保存前的旧值,
+  // saveRoom 之后需要同步成新值,否则 game:guess:applied 携带的
+  // stateVersion 会与客户端当前值相同而被丢弃,导致猜测栏不刷新。
+  if (typeof (result as { revision?: unknown }).revision === 'number') {
+    (result as unknown as { revision: number }).revision = room.revision;
+  }
 }
 
 export async function removeExpiredSpectators(

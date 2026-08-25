@@ -1,5 +1,5 @@
 const STORAGE_KEY = 'csgofriberg.multi-lobby-preferences';
-const BO_OPTIONS = new Set([1, 3, 5, 7]);
+const BO_OPTIONS = new Set([0, 1, 3, 5, 7]);
 
 export interface MultiLobbyPreferences {
   createDifficulty: string;

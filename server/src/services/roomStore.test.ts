@@ -1,7 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import { randomUUID } from 'crypto';
 import {
+  ApplyRoomGuessInput,
+  StoredPlayer,
   StoredRoom,
+  applyRoomGuess,
   deleteRoom,
   getRoom,
   getRoomForIdentity,
@@ -151,4 +154,195 @@ describe('roomStore local fallback', () => {
     const current = await import('./roomStore').then(({ getRoom }) => getRoom(room.id));
     if (current) await deleteRoom(current);
   });
+
+  it('keeps a casual round open until every player finished answering', async () => {
+    const room = makeCasualPlayingRoom(`CASUAL1${Date.now()}`);
+    await saveRoom(room);
+    const inputA = guessInput(room.id, 'u:1', 's1', 1, 101, { gameId: 101, correct: true });
+    const appliedA = await applyRoomGuess(inputA);
+    expect(appliedA.kind).toBe('applied');
+    if (appliedA.kind !== 'applied') return;
+    expect(appliedA.shouldFinish).toBe(false);
+    expect(appliedA.matchOver).toBe(false);
+    expect(appliedA.casual).toBe(true);
+
+    const inputB = guessInput(room.id, 'u:2', 's2', 1, 202, { gameId: 202, correct: true });
+    const appliedB = await applyRoomGuess(inputB);
+    expect(appliedB.kind).toBe('applied');
+    if (appliedB.kind !== 'applied') return;
+    expect(appliedB.shouldFinish).toBe(true);
+    expect(appliedB.matchOver).toBe(false);
+
+    const snapshot = appliedB.room!;
+    expect(snapshot.status).toBe('round_over');
+    expect(snapshot.roundResult?.winnerKeys).toEqual(['u:1', 'u:2']);
+    expect(snapshot.players.find((p) => p.key === 'u:1')?.score).toBe(2);
+    expect(snapshot.players.find((p) => p.key === 'u:2')?.score).toBe(1);
+    await deleteRoom(room);
+  });
+
+  it('lets the other player keep guessing after one casual answer and rejects the finisher', async () => {
+    const room = makeCasualPlayingRoom(`CASUAL2${Date.now()}`);
+    await saveRoom(room);
+    const first = await applyRoomGuess(
+      guessInput(room.id, 'u:1', 's1', 1, 101, { gameId: 101, correct: true })
+    );
+    expect(first.kind).toBe('applied');
+    if (first.kind !== 'applied') return;
+
+    const second = await applyRoomGuess(
+      guessInput(room.id, 'u:2', 's2', 1, 202, { gameId: 202, correct: false })
+    );
+    expect(second.kind).toBe('applied');
+    if (second.kind !== 'applied') return;
+    expect(second.shouldFinish).toBe(false);
+    expect(second.room!.status).toBe('playing');
+
+    const finisher = await applyRoomGuess(
+      guessInput(room.id, 'u:1', 's1', 1, 103, { gameId: 103, correct: false })
+    );
+    expect(finisher.kind).toBe('error');
+    if (finisher.kind !== 'error') return;
+    expect(finisher.code).toBe('PLAYER_ROUND_DONE');
+    await deleteRoom(room);
+  });
+
+  it('rejects guesses from a surrendered casual player and ends the round when the other answers', async () => {
+    const room = makeCasualPlayingRoom(`CASUAL3${Date.now()}`);
+    await saveRoom(room);
+    await withRoomLock(room.id, (locked) => {
+      locked.eventResults['surrender:1:u:1'] = 1;
+    });
+
+    const blocked = await applyRoomGuess(
+      guessInput(room.id, 'u:1', 's1', 1, 101, { gameId: 101, correct: false })
+    );
+    expect(blocked.kind).toBe('error');
+    if (blocked.kind !== 'error') return;
+    expect(blocked.code).toBe('PLAYER_ROUND_DONE');
+
+    const last = await applyRoomGuess(
+      guessInput(room.id, 'u:2', 's2', 1, 203, { gameId: 203, correct: true })
+    );
+    expect(last.kind).toBe('applied');
+    if (last.kind !== 'applied') return;
+    expect(last.shouldFinish).toBe(true);
+    expect(last.room!.status).toBe('round_over');
+    expect(last.room!.roundResult?.winnerKeys).toEqual(['u:2']);
+    expect(last.room!.roundResult?.reason).toBe('guessed');
+    await deleteRoom(room);
+  });
+
+  it('awards the first casual correct guess 2 points and a later one 1 point', async () => {
+    const room = makeCasualPlayingRoom(`CASUAL4${Date.now()}`);
+    await saveRoom(room);
+
+    const first = await applyRoomGuess(
+      guessInput(room.id, 'u:1', 's1', 1, 101, { gameId: 101, correct: true })
+    );
+    expect(first.kind).toBe('applied');
+    if (first.kind !== 'applied') return;
+    expect(first.room!.players.find((p) => p.key === 'u:1')?.score).toBe(2);
+
+    // A second correct guess in the same round is worth 1 point
+    const second = await applyRoomGuess(
+      guessInput(room.id, 'u:2', 's2', 1, 202, { gameId: 202, correct: true })
+    );
+    expect(second.kind).toBe('applied');
+    if (second.kind !== 'applied') return;
+    expect(second.room!.players.find((p) => p.key === 'u:1')?.score).toBe(2);
+    expect(second.room!.players.find((p) => p.key === 'u:2')?.score).toBe(1);
+
+    // A fresh round resets the first-correct bonus
+    await deleteRoom(room);
+    const next = makeCasualPlayingRoom(`CASUAL5${Date.now()}`);
+    next.round = 2;
+    await saveRoom(next);
+    const nextFirst = await applyRoomGuess(
+      guessInput(next.id, 'u:1', 's1', 2, 303, { gameId: 303, correct: true })
+    );
+    expect(nextFirst.kind).toBe('applied');
+    if (nextFirst.kind !== 'applied') return;
+    expect(nextFirst.room!.players.find((p) => p.key === 'u:1')?.score).toBe(2);
+    await deleteRoom(next);
+  });
+
+  it('returns the post-save revision for applied local guesses', async () => {
+    const room = makeCasualPlayingRoom(`REV${Date.now()}`);
+    await saveRoom(room);
+    const before = await getRoom(room.id);
+    const result = await applyRoomGuess(
+      guessInput(room.id, 'u:1', 's1', 1, 101, { gameId: 101, correct: true })
+    );
+    expect(result.kind).toBe('applied');
+    if (result.kind !== 'applied') return;
+    const after = await getRoom(room.id);
+    expect(after?.revision).toBe((before?.revision ?? 0) + 1);
+    // 客户端依赖 result.revision 作为 stateVersion,必须与落库后的 revision 一致
+    expect(result.revision).toBe(after?.revision);
+    expect(result.room?.revision).toBe(after?.revision);
+    await deleteRoom(room);
+  });
 });
+
+function makeCasualPlayingRoom(id: string): StoredRoom {
+  const room = makeRoom(id);
+  room.boType = 0;
+  room.status = 'playing';
+  room.round = 1;
+  room.targetGameId = 1;
+  room.roundEndsAt = Date.now() + 60_000;
+  room.players = [
+    player('u:1', 's1'),
+    player('u:2', 's2'),
+  ];
+  return room;
+}
+
+function player(key: string, socketId: string): StoredPlayer {
+  return {
+    key, userId: null, name: key, socketId, ready: true,
+    score: 0, guesses: [], lastGuessAt: null, connected: true, disconnectDeadline: null,
+  };
+}
+
+function guessInput(
+  roomId: string,
+  identity: string,
+  socketId: string,
+  expectedRound: number,
+  gameId: number,
+  options: { correct: boolean }
+): ApplyRoomGuessInput {
+  return {
+    roomId,
+    identity,
+    socketId,
+    expectedRound,
+    eventId: `evt-${identity}-${gameId}-${Math.random().toString(36).slice(2)}`,
+    targetGameId: 1,
+    feedback: {
+      gameId,
+      title: `title-${gameId}`,
+      correct: options.correct,
+      attributes: {
+        releaseYear: { value: 2000, level: 'wrong' },
+        company: { value: '', level: 'wrong' },
+        isR18: { value: false, level: 'wrong' },
+        scenarioWriter: { value: '', level: 'wrong' },
+        musicComposer: { value: '', level: 'wrong' },
+        artist: { value: '', level: 'wrong' },
+        voiceActor: { value: '', level: 'wrong' },
+        tags: { value: '', level: 'wrong' },
+        bgmScore: { value: 0, level: 'wrong' },
+        isSeries: { value: false, level: 'wrong' },
+        length: { value: '', level: 'wrong' },
+      },
+    },
+    maxGuesses: 8,
+    nextRoundDelayMs: 100,
+    minGuessIntervalMs: 0,
+    rateLimit: 100,
+    rateWindowSeconds: 10,
+  };
+}

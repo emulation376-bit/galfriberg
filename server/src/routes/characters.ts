@@ -225,7 +225,7 @@ router.post(
       const response = await withKeyLock(`character-game:${gameId}`, async () => {
         const game = await loadOwnedGame(gameId, owner.identityKey);
         if (game.guesses.some((item) => item.guessId === req.body.characterId)) {
-          throw new HttpError(400, 'ALREADY_GUESSED');
+          throw new HttpError(400, 'CHARACTER_ALREADY_GUESSED');
         }
         const guess = await loadCharacterClueCached(req.body.characterId);
         const target = await loadCharacterClueCached(game.targetCharacterId);

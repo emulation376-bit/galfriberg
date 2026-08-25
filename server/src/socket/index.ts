@@ -36,6 +36,7 @@ import {
   getRoomGuessTarget,
   getRoomIdForIdentity,
   getMaintenanceUntil,
+  isCasualBo,
   setRecoveryWindow,
   isSocketAlive,
   queueOrTakeOpponent,
@@ -68,8 +69,18 @@ import {
   recordMatchmakingExit,
 } from '../services/matchmakingCooldown';
 
-const NEXT_ROUND_DELAY_MS = 6_000;
-const ROUND_TIME_MS = 120_000;
+const NEXT_ROUND_DELAY_MS = 5_000;
+const ROUND_TIME_MS = 5 * 60_000;
+/** 聚会模式：每轮 10 分钟，回合结束后 10 秒自动进入下一题 */
+const CASUAL_NEXT_ROUND_DELAY_MS = 10_000;
+const CASUAL_ROUND_TIME_MS = 10 * 60_000;
+
+function roundTimeMs(room: StoredRoom): number {
+  return isCasualBo(room.boType) ? CASUAL_ROUND_TIME_MS : ROUND_TIME_MS;
+}
+function nextRoundDelayMs(room: StoredRoom): number {
+  return isCasualBo(room.boType) ? CASUAL_NEXT_ROUND_DELAY_MS : NEXT_ROUND_DELAY_MS;
+}
 const MULTI_GUESS_INTERVAL_MS = 1_500;
 const FINISHED_ROOM_TTL_MS = 5 * 60_000;
 const LOCAL_GUESS_LIMIT = 12;
@@ -93,6 +104,8 @@ function allowLocalGuess(identity: string): boolean {
   return true;
 }
 const MAX_SPECTATORS = 100;
+const MAX_PLAYERS = 2;
+const MAX_CASUAL_PLAYERS = 5;
 const MAX_CONNECTIONS_PER_IDENTITY = 3;
 const MAX_CONNECTIONS_PER_IP = 20;
 const ROOM_ID_CHARS = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
@@ -104,7 +117,7 @@ const roomPlayerStatsPayloadSchema = z.object({
 });
 const roomCreatePayloadSchema = z.object({
   dbType: difficultyKeySchema,
-  boType: z.union([z.literal(1), z.literal(3), z.literal(5), z.literal(7)]).default(3),
+  boType: z.union([z.literal(0), z.literal(1), z.literal(3), z.literal(5), z.literal(7)]).default(3),
   allowSpectators: z.boolean().default(false),
   anonymous: z.boolean().default(false),
 });
@@ -287,6 +300,7 @@ function buildMatchReplay(room: StoredRoom, viewerKey: string) {
 
 function buildPublicRoom(room: StoredRoom, viewerKey: string) {
   const viewerIsSpectator = room.spectators.some((spectator) => spectator.key === viewerKey);
+  const casual = isCasualBo(room.boType);
   const roundIsComplete = room.status === 'round_over' || room.status === 'finished';
   const target = room.targetGameId ? getGame(room.targetGameId) : undefined;
   const matchReplay = buildMatchReplay(room, viewerKey);
@@ -316,6 +330,7 @@ function buildPublicRoom(room: StoredRoom, viewerKey: string) {
       ? null
       : {
           winnerKey: room.roundResult.winnerKey,
+          winnerKeys: room.roundResult.winnerKeys ?? null,
           reason: room.roundResult.reason,
           nextRoundAt: room.roundResult.nextRoundAt,
           answer: answerView(room.targetGameId),
@@ -340,9 +355,12 @@ function buildPublicRoom(room: StoredRoom, viewerKey: string) {
         connected: p.connected,
         score: p.score,
         guessCount: guesses.length,
+        roundSurrendered: room.eventResults[`surrender:${room.round}:${p.key}`] === 1,
         guesses: viewerIsSpectator || roundIsComplete || p.key === viewerKey
           ? guesses.map(visibleGuess)
-          : guesses.map(hiddenGuess),
+          : casual
+            ? guesses.map((feedback) => feedback.correct ? hiddenGuess(feedback) : visibleGuess(feedback))
+            : guesses.map(hiddenGuess),
       };
     }),
   };
@@ -477,21 +495,23 @@ async function persistMatch(
   winnerKey: string | null,
   forfeitedKey: string | null = room.matchResult?.forfeitedKey ?? null
 ) {
-  await enqueueMatchResult({
-    recordId: room.recordId,
-    dbType: room.dbType,
-    boType: room.boType,
-    winnerKey,
-    reason: room.matchResult?.reason ?? 'score',
-    forfeitedKey,
-    participants: room.players.map((player) => ({
-      key: player.key,
-      userId: player.userId,
-      name: identityDisplayName(player),
-      score: player.score,
-    })),
-    rounds: room.replayRounds,
-  });
+  if (!isCasualBo(room.boType)) {
+    await enqueueMatchResult({
+      recordId: room.recordId,
+      dbType: room.dbType,
+      boType: room.boType,
+      winnerKey,
+      reason: room.matchResult?.reason ?? 'score',
+      forfeitedKey,
+      participants: room.players.map((player) => ({
+        key: player.key,
+        userId: player.userId,
+        name: identityDisplayName(player),
+        score: player.score,
+      })),
+      rounds: room.replayRounds,
+    });
+  }
   await Promise.allSettled(room.players.map((player) => clearMatchmakingCooldown(player.key)));
   await acknowledgeSchedule(`persist|${room.id}|0`);
 }
@@ -607,7 +627,7 @@ async function startRound(io: Server, roomId: string) {
     room.readyCheckEndsAt = null;
     room.round += 1;
     room.targetGameId = target.id;
-    room.roundEndsAt = Date.now() + ROUND_TIME_MS;
+    room.roundEndsAt = Date.now() + roundTimeMs(room);
     room.nextRoundAt = null;
     room.eventResults = {};
     room.roundResult = null;
@@ -632,7 +652,7 @@ async function startRound(io: Server, roomId: string) {
     room: publicRoom(room, viewerKey),
     serverNow: Date.now(),
   }));
-  setLocalTimer(`round:${roomId}`, ROUND_TIME_MS, () => {
+  setLocalTimer(`round:${roomId}`, roundTimeMs(room), () => {
     return finishRound(io, roomId, null, 'timeout', room.round);
   });
   return true;
@@ -647,6 +667,24 @@ async function finishRound(
 ) {
   const result = await withRoomLock(roomId, (room) => {
     if (room.status !== 'playing' || room.round !== expectedRound) return null;
+    if (isCasualBo(room.boType)) {
+      const winnerKeys = room.players
+        .filter((p) => p.guesses.some((g) => g.correct))
+        .map((p) => p.key);
+      room.roundEndsAt = null;
+      room.status = 'round_over';
+      room.nextRoundAt = Date.now() + nextRoundDelayMs(room);
+      room.roundResult = {
+        round: room.round,
+        winnerKey: winnerKeys[0] ?? null,
+        winnerKeys,
+        reason,
+        matchOver: false,
+        nextRoundAt: room.nextRoundAt,
+      };
+      appendReplayRound(room);
+      return { room, matchOver: false };
+    }
     const winner = room.players.find((p) => p.key === winnerKey);
     if (winner) winner.score += 1;
     room.roundEndsAt = null;
@@ -654,7 +692,7 @@ async function finishRound(
     if (matchOver) room.status = 'finished';
     else {
       room.status = 'round_over';
-      room.nextRoundAt = Date.now() + NEXT_ROUND_DELAY_MS;
+      room.nextRoundAt = Date.now() + nextRoundDelayMs(room);
     }
     room.roundResult = {
       round: room.round,
@@ -684,7 +722,7 @@ async function finishRound(
     room: publicRoom(room, viewerKey),
     serverNow: Date.now(),
   }));
-  setLocalTimer(`next:${roomId}`, NEXT_ROUND_DELAY_MS, () => startRound(io, roomId));
+  setLocalTimer(`next:${roomId}`, nextRoundDelayMs(room), () => startRound(io, roomId));
 }
 
 async function surrenderRound(
@@ -693,11 +731,38 @@ async function surrenderRound(
   loserKey: string,
   socketId: string,
   expectedRound: number
-): Promise<{ room: StoredRoom; matchOver: boolean } | 'stale' | null> {
+): Promise<{ room: StoredRoom; matchOver: boolean; roundEnded?: boolean } | 'stale' | null> {
   const result = await withRoomLock(roomId, (room) => {
     if (room.status !== 'playing' || room.round !== expectedRound) return null;
     const loser = room.players.find((player) => player.key === loserKey);
     if (!loser || loser.socketId !== socketId) return { stale: true as const };
+    if (isCasualBo(room.boType)) {
+      room.eventResults[`surrender:${room.round}:${loser.key}`] = 1;
+      const allDone = room.players.every((player) =>
+        player.guesses.some((guess) => guess.correct)
+        || player.guesses.length >= MAX_GUESSES
+        || room.eventResults[`surrender:${room.round}:${player.key}`] === 1
+      );
+      if (!allDone) {
+        return { room, matchOver: false, roundEnded: false as const };
+      }
+      const winnerKeys = room.players
+        .filter((player) => player.guesses.some((guess) => guess.correct))
+        .map((player) => player.key);
+      room.roundEndsAt = null;
+      room.status = 'round_over';
+      room.nextRoundAt = Date.now() + nextRoundDelayMs(room);
+      room.roundResult = {
+        round: room.round,
+        winnerKey: winnerKeys[0] ?? null,
+        winnerKeys,
+        reason: winnerKeys.length ? 'guessed' : 'surrender',
+        matchOver: false,
+        nextRoundAt: room.nextRoundAt,
+      };
+      appendReplayRound(room);
+      return { room, matchOver: false, roundEnded: true as const };
+    }
     const winner = room.players.find((player) => player.key !== loserKey);
     if (!winner) return null;
 
@@ -710,7 +775,7 @@ async function surrenderRound(
       room.matchResult = { winnerKey: winner.key, reason: 'score', forfeitedKey: null };
     } else {
       room.status = 'round_over';
-      room.nextRoundAt = Date.now() + NEXT_ROUND_DELAY_MS;
+      room.nextRoundAt = Date.now() + nextRoundDelayMs(room);
     }
     room.roundResult = {
       round: room.round,
@@ -725,6 +790,17 @@ async function surrenderRound(
 
   if (!result) return null;
   if ('stale' in result) return 'stale';
+  if (result.roundEnded === false) {
+    emitRoomPatch(io, result.room, {
+      players: {
+        updated: result.room.players.map((player) => ({
+          key: player.key,
+          roundSurrendered: result.room.eventResults[`surrender:${result.room.round}:${player.key}`] === 1,
+        })),
+      },
+    });
+    return result;
+  }
   const winnerKey = result.room.roundResult?.winnerKey ?? null;
   if (result.matchOver) {
     emitRoomViews(io, result.room, 'match:over', (viewerKey) => ({
@@ -740,9 +816,44 @@ async function surrenderRound(
       room: publicRoom(result.room, viewerKey),
       serverNow: Date.now(),
     }));
-    setLocalTimer(`next:${roomId}`, NEXT_ROUND_DELAY_MS, () => startRound(io, roomId));
+    setLocalTimer(`next:${roomId}`, nextRoundDelayMs(result.room), () => startRound(io, roomId));
   }
   return result;
+}
+
+/** 聚会赛制：若剩余玩家全部完成本轮（猜中/次数用尽/投降），立即结束本轮进入下一轮 */
+async function maybeFinishCasualRound(io: Server, roomId: string): Promise<void> {
+  const result = await withRoomLock(roomId, (room) => {
+    if (!isCasualBo(room.boType) || room.status !== 'playing') return null;
+    const allDone = room.players.every((player) =>
+      player.guesses.some((guess) => guess.correct)
+      || player.guesses.length >= MAX_GUESSES
+      || room.eventResults[`surrender:${room.round}:${player.key}`] === 1
+    );
+    if (!allDone) return null;
+    const winnerKeys = room.players
+      .filter((player) => player.guesses.some((guess) => guess.correct))
+      .map((player) => player.key);
+    room.roundEndsAt = null;
+    room.status = 'round_over';
+    room.nextRoundAt = Date.now() + nextRoundDelayMs(room);
+    room.roundResult = {
+      round: room.round,
+      winnerKey: winnerKeys[0] ?? null,
+      winnerKeys,
+      reason: winnerKeys.length ? 'guessed' : 'exhausted',
+      matchOver: false,
+      nextRoundAt: room.nextRoundAt,
+    };
+    appendReplayRound(room);
+    return { room };
+  }, (value) => Boolean(value));
+  if (!result) return;
+  emitRoomViews(io, result.room, 'round:over', (viewerKey) => ({
+    room: publicRoom(result.room, viewerKey),
+    serverNow: Date.now(),
+  }));
+  setLocalTimer(`next:${result.room.id}`, nextRoundDelayMs(result.room), () => startRound(io, result.room.id));
 }
 
 async function cleanupRoom(roomId: string) {
@@ -777,6 +888,32 @@ async function processDisconnectedPlayer(
       return { kind: 'waiting' as const, room };
     }
     if (!['starting', 'playing', 'round_over'].includes(room.status)) return null;
+
+    if (isCasualBo(room.boType)) {
+      room.players = room.players.filter((player) => player.key !== disconnectedKey);
+      if (room.players.length && room.hostKey === disconnectedKey) {
+        room.hostKey = room.players[0].key;
+      }
+      if (room.players.length >= 2) {
+        return { kind: 'waiting' as const, room };
+      }
+      room.status = 'finished';
+      room.roundEndsAt = null;
+      room.nextRoundAt = null;
+      room.eventResults = {};
+      room.roundResult = null;
+      room.matchResult = {
+        winnerKey: room.players[0]?.key ?? null,
+        reason: 'disconnect_timeout',
+        forfeitedKey: disconnectedKey,
+      };
+      return {
+        kind: 'finished' as const,
+        room,
+        winnerKey: room.players[0]?.key ?? null,
+        forfeitedKey: disconnectedKey,
+      };
+    }
 
     const opponent = room.players.find((player) => player.key !== disconnectedKey);
     let winnerKey = opponent?.key ?? null;
@@ -821,6 +958,9 @@ async function processDisconnectedPlayer(
             : [],
         },
       });
+      if (result.room.status === 'playing') {
+        await maybeFinishCasualRound(io, roomId);
+      }
     }
     return null;
   }
@@ -1315,7 +1455,7 @@ export function setupSocket(io: Server) {
       joinRoomChannels(socket, refreshed, me.key);
       socket.data.roomId = refreshed.id;
       if (
-        refreshed.players.length === 2 &&
+        refreshed.players.length >= 2 &&
         refreshed.players.every((player) => player.connected) &&
         (
           refreshed.status === 'starting' ||
@@ -1475,8 +1615,9 @@ export function setupSocket(io: Server) {
           return { role: 'player' as const, room, existing: true };
         }
         const existingSpectator = room.spectators.find((p) => p.key === me.key);
+        const playerCap = isCasualBo(room.boType) ? MAX_CASUAL_PLAYERS : MAX_PLAYERS;
         const asSpectator = Boolean(
-          existingSpectator || payload.spectate || room.status !== 'waiting' || room.players.length >= 2
+          existingSpectator || payload.spectate || room.status !== 'waiting' || room.players.length >= playerCap
         );
         if (asSpectator) {
           if (!existingSpectator && !room.allowSpectators) return { code: 'SPECTATING_DISABLED' };
@@ -1689,6 +1830,7 @@ export function setupSocket(io: Server) {
       }
       const target = getGame(targetState.targetGameId);
       if (!target) return ack?.({ code: 'INTERNAL_ERROR' });
+      const guessRoom = await getRoom(roomId);
       const result = await applyRoomGuess({
         roomId,
         identity: me.key,
@@ -1698,7 +1840,7 @@ export function setupSocket(io: Server) {
         targetGameId: targetState.targetGameId,
         feedback: compareGuess(guess, target),
         maxGuesses: MAX_GUESSES,
-        nextRoundDelayMs: NEXT_ROUND_DELAY_MS,
+        nextRoundDelayMs: guessRoom ? nextRoundDelayMs(guessRoom) : NEXT_ROUND_DELAY_MS,
         minGuessIntervalMs: MULTI_GUESS_INTERVAL_MS,
         rateLimit: 12,
         rateWindowSeconds: 10,
@@ -1735,10 +1877,13 @@ export function setupSocket(io: Server) {
       }
       ack?.({ cooldownMs: MULTI_GUESS_INTERVAL_MS });
       if (!result.shouldFinish) {
+        const revealOpponent = Boolean(result.casual) && !result.feedback.correct;
         for (const playerKey of result.playerKeys) {
           io.to(identityChannel(playerKey)).emit('game:guess:applied', {
             ...delta,
-            feedback: playerKey === me.key ? visibleGuess(result.feedback) : hiddenGuess(result.feedback),
+            feedback: playerKey === me.key || revealOpponent
+              ? visibleGuess(result.feedback)
+              : hiddenGuess(result.feedback),
           });
         }
         io.to(spectatorChannel(roomId)).emit('game:guess:applied', {
@@ -1763,7 +1908,7 @@ export function setupSocket(io: Server) {
             room: publicRoom(finishedRoom, viewerKey),
             serverNow: Date.now(),
           }));
-          setLocalTimer(`next:${roomId}`, NEXT_ROUND_DELAY_MS, () => startRound(io, roomId));
+          setLocalTimer(`next:${roomId}`, nextRoundDelayMs(finishedRoom), () => startRound(io, roomId));
         }
       }
     }, gameGuessPayloadSchema);
@@ -1787,6 +1932,37 @@ export function setupSocket(io: Server) {
       }
       ack?.({ ok: true });
     }, activeRoundPayloadSchema);
+
+    safeOn(socket, 'room:end', async (_payload, ack) => {
+      await restorePromise;
+      if (!(await socketAllowed('end', me.key, 5, 60))) {
+        return ack?.({ code: 'RATE_LIMITED' });
+      }
+      const roomId = String(socket.data.roomId || await getRoomIdForIdentity(me.key) || '');
+      if (!roomId) return ack?.({ code: 'NO_ACTIVE_ROUND' });
+      const result = await withRoomLock(roomId, (room) => {
+        if (room.status === 'finished') return 'ROOM_NOT_READY' as const;
+        if (room.hostKey !== me.key) return 'NOT_HOST' as const;
+        const host = room.players.find((player) => player.key === me.key);
+        if (!host || host.socketId !== socket.id) return 'STALE_CONNECTION' as const;
+        if (!isCasualBo(room.boType)) return 'NOT_HOST' as const;
+        room.status = 'finished';
+        room.roundEndsAt = null;
+        room.nextRoundAt = null;
+        room.roundResult = null;
+        room.matchResult = { winnerKey: null, reason: 'host_ended', forfeitedKey: null };
+        return 'OK' as const;
+      }, (value) => value === 'OK');
+      if (result !== 'OK') return ack?.({ code: result ?? 'ROOM_NOT_READY' });
+      const room = await getRoom(roomId);
+      if (!room) return ack?.({ code: 'ROOM_NOT_READY' });
+      emitRoomViews(io, room, 'match:over', (viewerKey) => ({
+        room: publicRoom(room, viewerKey),
+        serverNow: Date.now(),
+      }));
+      setLocalTimer(`cleanup:${roomId}`, FINISHED_ROOM_TTL_MS, () => cleanupRoom(roomId));
+      ack?.({ ok: true });
+    });
 
     safeOn(socket, 'room:leave', async (_payload, ack) => {
       await restorePromise;
@@ -1873,13 +2049,42 @@ export function setupSocket(io: Server) {
       }
       const currentPlayer = room.players.find((p) => p.key === me.key);
       if (currentPlayer && (room.status === 'playing' || room.status === 'round_over' || room.status === 'starting')) {
-        const opponent = room.players.find((p) => p.key !== me.key);
-        const finished = await finishMatch(io, room.id, opponent?.key ?? null, 'opponent_left', {
-          key: me.key,
-          socketId: socket.id,
-        });
-        if (finished === 'stale') return ack?.({ code: 'STALE_CONNECTION' });
-        await clearIdentityRoom(me.key, room.id);
+        if (isCasualBo(room.boType)) {
+          // 聚会赛制：离开的玩家直接移除；剩余 >= 2 人则房间继续，否则整场结束
+          const left = await withRoomLock(room.id, (locked) => {
+            const leaving = locked.players.find((candidate) => candidate.key === me.key);
+            if (!leaving || leaving.socketId !== socket.id) return 'STALE_CONNECTION' as const;
+            locked.players = locked.players.filter((candidate) => candidate.key !== me.key);
+            if (locked.players.length && locked.hostKey === me.key) locked.hostKey = locked.players[0].key;
+            return { room: locked };
+          }, (value) => typeof value === 'object');
+          if (left === 'STALE_CONNECTION') return ack?.({ code: left });
+          if (left) {
+            await clearIdentityRoom(me.key, room.id);
+            if (left.room.players.length >= 2) {
+              emitRoomPatch(io, left.room, {
+                hostKey: left.room.hostKey,
+                players: {
+                  removed: [me.key],
+                  updated: left.room.players.map((player) => ({ key: player.key, ready: player.ready })),
+                },
+              });
+              if (left.room.status === 'playing') {
+                await maybeFinishCasualRound(io, room.id);
+              }
+            } else {
+              await finishMatch(io, room.id, left.room.players[0]?.key ?? null, 'opponent_left');
+            }
+          }
+        } else {
+          const opponent = room.players.find((p) => p.key !== me.key);
+          const finished = await finishMatch(io, room.id, opponent?.key ?? null, 'opponent_left', {
+            key: me.key,
+            socketId: socket.id,
+          });
+          if (finished === 'stale') return ack?.({ code: 'STALE_CONNECTION' });
+          await clearIdentityRoom(me.key, room.id);
+        }
       } else {
         const left = await withRoomLock(room.id, (locked) => {
           const currentPlayer = locked.players.find((candidate) => candidate.key === me.key);

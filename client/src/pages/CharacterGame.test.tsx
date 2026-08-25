@@ -128,7 +128,8 @@ describe('CharacterGame UX', () => {
     await user.click(screen.getByRole('button', { name: '提交猜测' }));
 
     expect(await screen.findByRole('dialog')).toHaveTextContent('茜崎空');
-    expect(screen.getByText('+1')).toBeInTheDocument();
+    // 发色列始终完整展示全部发色（不被省略计数隐藏）
+    expect(screen.getByText('粉色')).toBeInTheDocument();
     expect(screen.getAllByText('猜对了！').length).toBeGreaterThan(0);
   });
 });

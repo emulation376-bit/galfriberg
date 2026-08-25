@@ -15,8 +15,8 @@
    把视口压窄也保持左右布局,700px 以下实在放不下才堆叠 */
 @media (max-width: 960px) and (pointer: coarse), (max-width: 700px) {
   .boards { grid-template-columns: 1fr; }
-  .boards .player-board-opponent { order: 1; }
-  .boards .player-board-self { order: 2; }
+  .boards .player-board-self { order: 1; }
+  .boards .player-board-opponent { order: 2; }
 }
 
 @media (max-width: 760px) {

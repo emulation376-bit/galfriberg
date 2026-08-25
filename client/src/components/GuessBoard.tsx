@@ -46,7 +46,7 @@ function Cell({
               </span>
             ))}
             {typeof attr.omitted === 'number' && attr.omitted > 0 && (
-              <span className="staff-chip staff-omitted" title={`${attr.omitted}`}>……</span>
+              <span className="staff-chip staff-omitted" title={`+${attr.omitted}`}>+{attr.omitted}</span>
             )}
           </>
         ) : (

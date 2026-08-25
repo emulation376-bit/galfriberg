@@ -172,6 +172,8 @@ export interface RoomPlayer {
   connected: boolean;
   score: number;
   guessCount: number;
+  /** 聚会赛制下是否已投降本轮（投降后不可再作答） */
+  roundSurrendered?: boolean;
   guesses: MultiplayerGuessFeedback[];
 }
 
@@ -259,6 +261,8 @@ export interface RoomState {
   players: RoomPlayer[];
   roundResult: {
     winnerKey: string | null;
+    /** 聚会赛制下双方都可能猜中；普通赛制为单个 winnerKey 或 null */
+    winnerKeys?: string[] | null;
     reason: string;
     nextRoundAt: number | null;
     answer: {

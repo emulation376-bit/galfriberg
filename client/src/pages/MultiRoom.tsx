@@ -41,6 +41,7 @@ import PlayerStatsDialog, { type PlayerStatsView } from '../components/PlayerSta
 
 interface RoundOver {
   winnerKey: string | null;
+  winnerKeys?: string[] | null;
   reason: string;
   nextRoundAt: number | null;
   answer: AnswerInfo | null;
@@ -53,8 +54,10 @@ interface MatchOver {
 }
 
 const MULTI_GUESS_INTERVAL_MS = 1_500;
-const ROUND_TIME_MS = 120_000;
-const NEXT_ROUND_DELAY_MS = 6_000;
+const ROUND_TIME_MS = 5 * 60_000;
+const NEXT_ROUND_DELAY_MS = 5_000;
+const CASUAL_ROUND_TIME_MS = 10 * 60_000;
+const CASUAL_NEXT_ROUND_DELAY_MS = 10_000;
 
 interface ServerClockAnchor {
   serverNow: number;
@@ -111,6 +114,7 @@ function matchOverReason(
   t: TFunction
 ): string {
   if (result.reason === 'score') return t('multi.matchReasons.score');
+  if (result.reason === 'host_ended') return t('multi.matchReasons.hostEnded');
   if (result.reason === 'opponent_left') {
     if (isSpectator) return t('multi.matchReasons.sideLeft');
     return result.winnerKey === viewerKey ? t('multi.matchReasons.opponentLeft') : t('multi.matchReasons.selfLeft');
@@ -195,10 +199,12 @@ function PlayerBoard({
   boardRef?: Ref<HTMLDivElement>;
 }) {
   const { t } = useTranslation();
+  // 聚会模式为全宽竖向棋盘，对手棋盘不再收窄 staff/tag 列，栏位宽度与单人模式一致
+  const casual = room.boType === 0;
   return (
     <div
       ref={boardRef}
-      className={`card player-board${isSelf ? ' player-board-self' : ' player-board-opponent'}`}
+      className={`card player-board${isSelf ? ' player-board-self' : casual ? '' : ' player-board-opponent'}`}
       style={{ margin: 0 }}
     >
       <h3>
@@ -326,12 +332,12 @@ export default function MultiRoom() {
       setOfflineNote('');
       setRematchNotice('');
       setRoundExpired(false);
-      applyRoomSnapshot(p.room, false, p.serverNow, ROUND_TIME_MS);
+      applyRoomSnapshot(p.room, false, p.serverNow, p.room.boType === 0 ? CASUAL_ROUND_TIME_MS : ROUND_TIME_MS);
     };
     const onRoundOver = (p: { room: RoomState; serverNow?: number }) => {
       setGuessCooldownUntil(0);
       setRoundExpired(true);
-      applyRoomSnapshot(p.room, false, p.serverNow, NEXT_ROUND_DELAY_MS);
+      applyRoomSnapshot(p.room, false, p.serverNow, p.room.boType === 0 ? CASUAL_NEXT_ROUND_DELAY_MS : NEXT_ROUND_DELAY_MS);
     };
     const onMatchOver = (p: { room: RoomState; serverNow?: number }) => {
       setGuessCooldownUntil(0);
@@ -679,6 +685,24 @@ export default function MultiRoom() {
     });
   };
 
+  /** 聚会赛制：房主随时结束整个房间 */
+  const endRoom = async () => {
+    const current = roomRef.current;
+    if (!current || leaving) return;
+    if (!await confirm({
+      title: t('multi.endRoomTitle'),
+      message: t('multi.endRoomMessage'),
+      confirmLabel: t('multi.endRoomConfirm'),
+      tone: 'warning',
+    })) return;
+    setLeaving(true);
+    getSocket().emit('room:end', {}, (res: any) => {
+      setLeaving(false);
+      if (res?.room) applyRoomSnapshot(res.room);
+      if (res?.code) toast.error(translate(res.code));
+    });
+  };
+
   const updateRematch = (event: string, payload: unknown = {}) => {
     if (rematchBusy) return;
     setRematchBusy(true);
@@ -705,6 +729,15 @@ export default function MultiRoom() {
   const isSpectator = !!room && !me;
   const isHost = room?.hostKey === myKey;
   const playing = room?.status === 'playing';
+  const casual = room?.boType === 0;
+  /** 聚会赛制：本人是否已完成本轮（猜中 / 次数用尽 / 投降），完成后不可再作答 */
+  const meDone = Boolean(
+    me && (
+      me.roundSurrendered
+      || me.guessCount >= room!.maxGuesses
+      || me.guesses.some((guess) => !('hidden' in guess) && guess.correct)
+    )
+  );
   const rematchInviterKey = room?.rematchInvite?.inviterKey ?? null;
   const canRematch = Boolean(
     room?.rematchAllowed &&
@@ -814,25 +847,42 @@ export default function MultiRoom() {
     );
   }
 
-  const leftPlayer = me ?? room.players[0];
-  const rightPlayer = me ? opponent : room.players[1];
   const replay = room.matchReplay;
   const replayRound = replayRoundIndex == null ? null : replay?.rounds[replayRoundIndex] ?? null;
-  const displayedLeftPlayer = leftPlayer && replayRound
-    ? { ...leftPlayer, guessCount: replayRound.me.guesses.length, guesses: replayRound.me.guesses }
-    : leftPlayer;
-  const displayedRightPlayer = rightPlayer && replayRound
-    ? { ...rightPlayer, guessCount: replayRound.opponent.guesses.length, guesses: replayRound.opponent.guesses }
-    : rightPlayer;
+  /** 答题栏按“自己最上、其余按房间顺序”竖向排布；回放时用回放数据替换猜测 */
+  const orderedPlayers = [...room.players].sort((a, b) => {
+    if (a.key === myKey) return -1;
+    if (b.key === myKey) return 1;
+    return 0;
+  });
+  const boardPlayers = replayRound
+    ? orderedPlayers.map((player) => {
+      const isMe = player.key === myKey;
+      const replayGuesses = isMe ? replayRound.me.guesses : replayRound.opponent.guesses;
+      return { ...player, guessCount: replayGuesses.length, guesses: replayGuesses };
+    })
+    : orderedPlayers;
 
   return (
     <Page
       className={`game-page multi-game-page${inputFocused ? ' keyboard-active' : ''}`}
-      title={t('multi.roomTitle', { bo: room.boType })}
+      title={casual ? t('multi.roomTitleCasual') : t('multi.roomTitle', { bo: room.boType })}
       icon={<Globe size={17} />}
       onBack={() => void leaveRoom()}
       actions={
         <div className="room-actions">
+          {isHost && casual && (room.status === 'playing' || room.status === 'round_over') && (
+            <button
+              type="button"
+              className="btn btn-warning btn-sm"
+              aria-label={t('multi.endRoom')}
+              disabled={leaving}
+              onClick={() => void endRoom()}
+            >
+              <X size={15} />
+              <span className="btn-text">{leaving ? t('multi.processing') : t('multi.endRoom')}</span>
+            </button>
+          )}
           <span className="room-code-wrap">
             <button
               type="button"
@@ -858,7 +908,7 @@ export default function MultiRoom() {
               {leaving ? t('multi.leaving') : isSpectator ? t('multi.exitSpectating') : t('multi.leaveRoom')}
             </span>
           </button>
-          {playing && me && (
+          {playing && me && (!casual || !meDone) && (
             <button
               className="btn btn-ghost btn-sm"
               disabled={roundExpired || surrendering}
@@ -884,8 +934,12 @@ export default function MultiRoom() {
         <>
           <Swords size={15} />
           {room.status === 'waiting'
-            ? t('multi.waitingStatus', { database: difficultyLabel(t, room.dbType), wins: room.winsNeeded })
-            : t('multi.playingStatus', { round: room.round, wins: room.winsNeeded })}
+            ? casual
+              ? t('multi.waitingStatusCasual', { database: difficultyLabel(t, room.dbType) })
+              : t('multi.waitingStatus', { database: difficultyLabel(t, room.dbType), wins: room.winsNeeded })
+            : casual
+              ? t('multi.playingStatusCasual', { round: room.round })
+              : t('multi.playingStatus', { round: room.round, wins: room.winsNeeded })}
           {room.status === 'waiting' && room.matchmaking && <Countdown deadline={readyDeadline} />}
           {playing && <Countdown deadline={roundDeadline} onExpire={() => setRoundExpired(true)} />}
           {isSpectator && (
@@ -909,26 +963,24 @@ export default function MultiRoom() {
             onPick={(p) => submitGuess(Number(p.id))}
             onFocusChange={setInputFocused}
             statusText={<GuessCooldownStatus until={guessCooldownUntil} />}
-            disabled={roundExpired || me.guessCount >= room.maxGuesses}
+            disabled={roundExpired || meDone}
           />
         ) : undefined
       }
     >
-      {/* 比分栏 */}
-      <div className="card score-bar">
-        <span className="player-name score-bar-player-left">
-          {leftPlayer?.key === room.hostKey && <Crown size={16} color="var(--warning)" />}
-          <span className="player-id-text">{leftPlayer?.name ?? '-'}</span>
-          {statsButton(leftPlayer)}
-        </span>
-        <span className="score">
-          {leftPlayer?.score ?? 0} : {rightPlayer?.score ?? 0}
-        </span>
-        <span className="player-name score-bar-player-right">
-          {rightPlayer?.key === room.hostKey && <Crown size={16} color="var(--warning)" />}
-          <span className="player-id-text">{rightPlayer?.name ?? t('multi.waitingForJoin')}</span>
-          {statsButton(rightPlayer)}
-        </span>
+      {/* 比分栏：所有玩家（自己高亮） */}
+      <div className="card score-bar score-bar-multi">
+        {orderedPlayers.map((player) => (
+          <span
+            key={player.key}
+            className={`player-name score-bar-player-item${player.key === myKey ? ' score-bar-player-self' : ''}`}
+          >
+            {player.key === room.hostKey && <Crown size={16} color="var(--warning)" />}
+            <span className="player-id-text">{player.name}</span>
+            {statsButton(player)}
+            <b className="score-bar-item-score">{player.score}</b>
+          </span>
+        ))}
       </div>
 
       {replay && replayRound && replayRoundIndex != null && (
@@ -1054,29 +1106,19 @@ export default function MultiRoom() {
         </div>
       )}
 
-      {/* 对局区:左右分栏(移动端上下堆叠) */}
+      {/* 对局区：普通 BO 桌面左右分栏；聚会模式强制竖向、自己的答题栏在最上方 */}
       {room.status !== 'waiting' && (
-        <div className="boards">
-          {displayedLeftPlayer && (
+        <div className={`boards${casual ? ' boards-casual' : ''}`}>
+          {boardPlayers.map((player) => (
             <PlayerBoard
-              key={`${displayedLeftPlayer.key}:${replayRound?.round ?? room.roundId}`}
-              player={displayedLeftPlayer}
+              key={`${player.key}:${replayRound?.round ?? room.roundId}`}
+              player={player}
               room={room}
-              title={me ? t('multi.myGuesses') : displayedLeftPlayer.name}
-              isSelf={displayedLeftPlayer.key === myKey}
-              boardRef={displayedLeftPlayer.key === myKey ? ownBoardRef : undefined}
+              title={player.key === myKey ? t('multi.myGuesses') : player.name}
+              isSelf={player.key === myKey}
+              boardRef={player.key === myKey ? ownBoardRef : undefined}
             />
-          )}
-          {displayedRightPlayer && (
-            <PlayerBoard
-              key={`${displayedRightPlayer.key}:${replayRound?.round ?? room.roundId}`}
-              player={displayedRightPlayer}
-              room={room}
-              title={displayedRightPlayer.name}
-              isSelf={displayedRightPlayer.key === myKey}
-              boardRef={displayedRightPlayer.key === myKey ? ownBoardRef : undefined}
-            />
-          )}
+          ))}
         </div>
       )}
 
@@ -1084,13 +1126,22 @@ export default function MultiRoom() {
       {roundOver && !matchOver && (
         <AnswerOverlay
           title={
-            roundOver.winnerKey == null
-              ? t('multi.roundDraw')
-              : roundOver.winnerKey === myKey
-                ? t('multi.roundWon')
-                : isSpectator
-                  ? t('multi.playerWonRound', { player: room.players.find((p) => p.key === roundOver.winnerKey)?.name ?? '' })
-                  : t('multi.roundLost')
+            (() => {
+              const winnerKeys = roundOver.winnerKeys && roundOver.winnerKeys.length
+                ? roundOver.winnerKeys
+                : (roundOver.winnerKey ? [roundOver.winnerKey] : []);
+              if (winnerKeys.length >= 2) {
+                return t('multi.roundMultiWon', { count: winnerKeys.length });
+              }
+              if (roundOver.winnerKey == null) return t('multi.roundDraw');
+              if (roundOver.winnerKey === myKey) return t('multi.roundWon');
+              if (isSpectator) {
+                return t('multi.playerWonRound', {
+                  player: room.players.find((p) => p.key === roundOver.winnerKey)?.name ?? '',
+                });
+              }
+              return t('multi.roundLost');
+            })()
           }
           answer={roundOver.answer}
           onClose={() => setRoundOver(null)}
@@ -1130,7 +1181,7 @@ export default function MultiRoom() {
               <p className="muted">
                 {t('multi.finalScore', {
                   reason: matchOverReason(matchOver, myKey, isSpectator, t),
-                  score: `${leftPlayer?.score ?? 0} : ${rightPlayer?.score ?? 0}`,
+                  score: orderedPlayers.map((player) => `${player.name} ${player.score}`).join(' · ') || '0 : 0',
                 })}
               </p>
               {rematchNotice && <p className="muted">{rematchNotice}</p>}

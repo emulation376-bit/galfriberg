@@ -131,4 +131,27 @@ describe('character single-player alignment', () => {
       }
     }
   });
+
+  it('rejects a duplicate character guess with CHARACTER_ALREADY_GUESSED', async () => {
+    if (!hasCharacters) return;
+    const guestKey = `character-duplicate-${Date.now()}`;
+    const cookie = guestCookie(guestKey);
+    const started = await post('/api/characters/game/start', cookie, { mode: 'normal' });
+    expect(started.response.status).toBe(200);
+    const guess = await db('characters').select('id').first();
+    if (!guess) return;
+    const gameId = started.data.gameId as string;
+    try {
+      const first = await post(`/api/characters/game/${gameId}/guess`, cookie, { characterId: String(guess.id) });
+      expect(first.response.status).toBe(200);
+      if (first.data.status === 'playing') {
+        const second = await post(`/api/characters/game/${gameId}/guess`, cookie, { characterId: String(guess.id) });
+        expect(second.response.status).toBe(400);
+        expect(second.data.code).toBe('CHARACTER_ALREADY_GUESSED');
+      }
+    } finally {
+      await db('character_games').where({ session_id: gameId }).del();
+      await db('character_games').where({ guest_key: guestKey }).del();
+    }
+  });
 });

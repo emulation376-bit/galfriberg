@@ -1625,4 +1625,145 @@ describe.skipIf(!redisReady)('multiplayer socket integration', () => {
       socket.disconnect();
     }
   });
+
+  it('casual rooms keep the round open until both players answer and reveal non-winning guesses', async () => {
+    const stamp = Date.now();
+    const tokenA = jwt.sign({ key: `casual-a-${stamp}`, typ: 'guest' }, config.jwtSecret, { expiresIn: '1h' });
+    const tokenB = jwt.sign({ key: `casual-b-${stamp}`, typ: 'guest' }, config.jwtSecret, { expiresIn: '1h' });
+    const a = await connect(withPowCookie(`csgofriberg_guest=${tokenA}`));
+    const b = await connect(withPowCookie(`csgofriberg_guest=${tokenB}`));
+    let roundOver = false;
+    b.on('round:over', () => { roundOver = true; });
+    try {
+      const created = await emit(a, 'room:create', { dbType: 'easy', boType: 0 });
+      createdRoomIds.push(created.room.id);
+      expect(created.room.boType).toBe(0);
+      expect(await emit(b, 'room:join', { roomId: created.room.id })).toMatchObject({
+        room: expect.objectContaining({ boType: 0 }),
+      });
+      expect((await emit(a, 'room:ready', { ready: true })).ok).toBe(true);
+      expect((await emit(b, 'room:ready', { ready: true })).ok).toBe(true);
+      expect((await emit(a, 'game:start')).ok).toBe(true);
+
+      const active = await getRoom(created.room.id);
+      expect(active?.round).toBe(1);
+      expect(active?.targetGameId).toEqual(expect.any(Number));
+      const targetId = active!.targetGameId!;
+      const wrong = await db('game_titles').select('id').whereNot('id', targetId).first();
+      if (!wrong) return;
+
+      // A guesses wrong: opponent B sees the full (non-hidden) feedback in casual mode
+      const bSeesGuess = onceEvent(b, 'game:guess:applied');
+      const firstA = await emit(a, 'game:guess', {
+        gameId: Number(wrong.id),
+        roundId: active!.round,
+        eventId: `casual-a1-${stamp}`,
+      });
+      expect(firstA).toMatchObject({ cooldownMs: expect.any(Number) });
+      const bFeedback = await bSeesGuess;
+      expect(bFeedback.feedback.hidden).not.toBe(true);
+      expect(bFeedback.feedback.title).toEqual(expect.any(String));
+      const afterWrong = await getRoom(created.room.id);
+      expect(afterWrong?.status).toBe('playing');
+
+      // B guesses correct: the round stays open, and A only sees a hidden (winning) row
+      const aSeesWinning = onceEvent(a, 'game:guess:applied');
+      const guessB = await emit(b, 'game:guess', {
+        gameId: targetId,
+        roundId: active!.round,
+        eventId: `casual-b1-${stamp}`,
+      });
+      expect(guessB).toMatchObject({ cooldownMs: expect.any(Number) });
+      const aFeedback = await aSeesWinning;
+      expect(aFeedback.feedback.hidden).toBe(true);
+      const afterB = await getRoom(created.room.id);
+      expect(afterB?.status).toBe('playing');
+
+      // A guesses correct too: both are done, so the round ends with both winners
+      const roundOverPromise = onceEvent(a, 'round:over');
+      const guessA2 = await emit(a, 'game:guess', {
+        gameId: targetId,
+        roundId: active!.round,
+        eventId: `casual-a2-${stamp}`,
+      });
+      expect(guessA2).toMatchObject({ cooldownMs: expect.any(Number) });
+      const roundPayload = await roundOverPromise;
+      expect(roundPayload.room.roundResult.winnerKeys).toEqual(
+        expect.arrayContaining([`g:casual-a-${stamp}`, `g:casual-b-${stamp}`])
+      );
+      expect(roundPayload.room.status).toBe('round_over');
+      expect(roundOver).toBe(true);
+
+      // Host can end the casual room at any time
+      const matchOverPromise = onceEvent(a, 'match:over');
+      expect((await emit(a, 'room:end', {})).ok).toBe(true);
+      const matchPayload = await matchOverPromise;
+      expect(matchPayload.room.matchResult).toMatchObject({ reason: 'host_ended', winnerKey: null });
+      expect(matchPayload.room.status).toBe('finished');
+    } finally {
+      a.disconnect();
+      b.disconnect();
+    }
+  });
+
+  it('lets casual rooms host up to five players and finishes a round once everyone answers', async () => {
+    const stamp = Date.now();
+    const sockets: ClientSocket[] = [];
+    try {
+      for (let index = 0; index < 5; index += 1) {
+        const token = jwt.sign({ key: `casual5-${index}-${stamp}`, typ: 'guest' }, config.jwtSecret, { expiresIn: '1h' });
+        sockets.push(await connect(withPowCookie(`csgofriberg_guest=${token}`)));
+      }
+      const created = await emit(sockets[0], 'room:create', {
+        dbType: 'easy',
+        boType: 0,
+        allowSpectators: true,
+      });
+      createdRoomIds.push(created.room.id);
+      for (let index = 1; index < 5; index += 1) {
+        expect((await emit(sockets[index], 'room:join', { roomId: created.room.id })).code).toBeUndefined();
+      }
+      // A 6th connection can only spectate once the casual cap of 5 is reached
+      const sixthToken = jwt.sign({ key: `casual5-6-${stamp}`, typ: 'guest' }, config.jwtSecret, { expiresIn: '1h' });
+      const sixth = await connect(withPowCookie(`csgofriberg_guest=${sixthToken}`));
+      sockets.push(sixth);
+      await emit(sixth, 'room:join', { roomId: created.room.id });
+
+      const beforeStart = await getRoom(created.room.id);
+      expect(beforeStart?.players.length).toBe(5);
+      expect(beforeStart?.spectators.length).toBe(1);
+
+      for (let index = 0; index < 5; index += 1) {
+        expect((await emit(sockets[index], 'room:ready', { ready: true })).ok).toBe(true);
+      }
+      expect((await emit(sockets[0], 'game:start')).ok).toBe(true);
+
+      const active = await getRoom(created.room.id);
+      expect(active?.players.length).toBe(5);
+      const targetId = active!.targetGameId!;
+
+      // Three players guess correctly, two surrender: the round only ends when all five are done
+      const roundOver = onceEvent(sockets[0], 'round:over');
+      for (let index = 0; index < 3; index += 1) {
+        await emit(sockets[index], 'game:guess', {
+          gameId: targetId,
+          roundId: active!.round,
+          eventId: `casual5-g${index}-${stamp}`,
+        });
+      }
+      for (let index = 3; index < 5; index += 1) {
+        expect((await emit(sockets[index], 'game:surrender-round', { roundId: active!.round })).ok).toBe(true);
+      }
+      const payload = await roundOver;
+      expect(payload.room.status).toBe('round_over');
+      expect(payload.room.roundResult?.winnerKeys).toHaveLength(3);
+      expect(payload.room.roundResult?.reason).toBe('guessed');
+      // 先猜中者 2 分，其余猜中者各 1 分
+      expect(payload.room.players.find((p) => p.key === `g:casual5-0-${stamp}`)?.score).toBe(2);
+      expect(payload.room.players.find((p) => p.key === `g:casual5-1-${stamp}`)?.score).toBe(1);
+      expect(payload.room.players.find((p) => p.key === `g:casual5-2-${stamp}`)?.score).toBe(1);
+    } finally {
+      sockets.forEach((socket) => socket.disconnect());
+    }
+  });
 });

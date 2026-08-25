@@ -24,7 +24,7 @@ import { difficultyLabel } from '../utils/difficulty';
 import { loadMultiLobbyPreferences, saveMultiLobbyPreferences } from '../store/multiLobbyPreferences';
 
 type DbType = string;
-const BO_OPTIONS = [1, 3, 5, 7];
+const BO_OPTIONS = [0, 1, 3, 5, 7];
 
 export function roomInviteUrl(roomId: string): string {
   return `${window.location.origin}/multi?join=${encodeURIComponent(roomId)}`;
@@ -409,7 +409,7 @@ export default function MultiLobby() {
             {copied ? t('multi.copied') : t('multi.copyCode')}
           </button>
           <p className="muted multi-lobby-created-meta">
-            {t('multi.database', { type: difficultyLabel(t, createdRoom.dbType) })} · {t('multi.format', { bo: createdRoom.boType })} · {createdRoom.allowSpectators ? t('multi.allowSpectating') : t('multi.denySpectating')}
+            {t('multi.database', { type: difficultyLabel(t, createdRoom.dbType) })} · {createdRoom.boType === 0 ? t('multi.formatCasual') : t('multi.format', { bo: createdRoom.boType })} · {createdRoom.allowSpectators ? t('multi.allowSpectating') : t('multi.denySpectating')}
             {' · '}{createdRoom.anonymous ? t('multi.anonymousRoom') : t('multi.showNames')}
           </p>
           <button className="btn btn-lg" onClick={() => navigate('/multi/room')}>
@@ -436,7 +436,7 @@ export default function MultiLobby() {
               options={BO_OPTIONS}
               value={boType}
               onChange={setBoType}
-              format={(v) => `BO${v}`}
+              format={(v) => (v === 0 ? t('multi.formatCasual') : `BO${v}`)}
             />
             <label className="spectator-option">
               <input

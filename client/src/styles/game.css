@@ -53,12 +53,12 @@
 .game-table th:nth-child(6), .game-table td:nth-child(6) { width: 5%; }
 .game-table th:nth-child(7), .game-table td:nth-child(7) { width: 5%; }
 .game-table th:nth-child(8), .game-table td:nth-child(8) { width: 12%; }
-.game-table th:nth-child(9), .game-table td:nth-child(9) { width: 14%; }
+.game-table th:nth-child(9), .game-table td:nth-child(9) { width: 12%; }
 .game-table th:nth-child(10), .game-table td:nth-child(10) { width: 14%; }
-.game-table th:nth-child(11), .game-table td:nth-child(11) { width: 14%; }
+.game-table th:nth-child(11), .game-table td:nth-child(11) { width: 16%; }
 .game-table td.correct { background: var(--correct); border-color: var(--correct); color: #fff; }
 .game-table td.close { background: var(--close); border-color: var(--close); color: #fff; }
-.game-table td.wrong { background: var(--wrong); border-color: var(--wrong); color: #fff; }
+.game-table td.wrong { background: var(--card); color: var(--text); }
 /* staff 类属性：逐人圆角小标签，仅命中答案的标绿，其余保持中性 */
 .game-table td.staff-cell { padding: 8px 6px; }
 .game-table .staff-chip {
