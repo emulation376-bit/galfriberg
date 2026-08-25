@@ -1679,7 +1679,9 @@ describe.skipIf(!redisReady)('multiplayer socket integration', () => {
       const afterB = await getRoom(created.room.id);
       expect(afterB?.status).toBe('playing');
 
-      // A guesses correct too: both are done, so the round ends with both winners
+      // A guesses correct too: both are done, so the round ends with both winners.
+      // 每位玩家两次猜测之间需间隔 1.5 秒，A 上一次猜测刚结束，先等过冷却再猜。
+      await new Promise((resolve) => setTimeout(resolve, 1700));
       const roundOverPromise = onceEvent(a, 'round:over');
       const guessA2 = await emit(a, 'game:guess', {
         gameId: targetId,
