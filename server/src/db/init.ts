@@ -1,8 +1,10 @@
 import { Knex } from 'knex';
 import { db } from './knex';
 import { ensureSchema } from './schema';
+import { invalidateCached } from '../services/queryCache';
 import gamesData from './seeds/games.json';
 import charactersData from './seeds/characters.json';
+import announcementsData from './seeds/announcements.json';
 
 interface SeedGame {
   title: string;
@@ -166,8 +168,29 @@ export async function seedCharactersIfEmpty(instance: Knex = db): Promise<void> 
   );
 }
 
+/** 公告种子：仅在公告表为空时导入（migrate 也会执行，避免生产库公告缺失） */
+export async function seedAnnouncementsIfEmpty(): Promise<void> {
+  const count = await db('announcements').count({ count: 'id' }).first();
+  if (Number(count?.count ?? 0) > 0) return;
+  const rows = (announcementsData as Array<{
+    title: string;
+    content: string;
+    is_popup?: boolean;
+  }>).map((item) => ({
+    title: item.title,
+    content: item.content,
+    is_popup: item.is_popup ?? false,
+  }));
+  if (rows.length) {
+    await db('announcements').insert(rows);
+  }
+  await invalidateCached('announcements');
+  console.log(`[seed] 公告 ${rows.length} 条`);
+}
+
 export async function initDb(): Promise<void> {
   await ensureSchema();
   await seedGamesIfEmpty();
   await seedCharactersIfEmpty();
+  await seedAnnouncementsIfEmpty();
 }
