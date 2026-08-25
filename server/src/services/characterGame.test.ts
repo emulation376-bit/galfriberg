@@ -6,6 +6,7 @@ import {
   listCharacters,
   pickCharacterTarget,
 } from './characterGame';
+import { loadTraitFrequency } from './traitResolver';
 import { CharacterClue } from './characterClues';
 
 const instances: Knex[] = [];
@@ -152,6 +153,39 @@ describe('character game', () => {
       { name: 'Other', matched: false },
     ]);
     expect(feedback.works.level).toBe('close');
+  });
+
+  it('sorts trait feedback by matched first then frequency and keeps all parts', async () => {
+    const instance = createInstance();
+    await ensureSchema(instance);
+    await instance('characters').insert([
+      { id: 'cX1', image: null, sex: 'f', birthday: 120, height: 158, age: 17 },
+      { id: 'cX2', image: null, sex: 'f', birthday: 121, height: 159, age: 17 },
+      { id: 'cX3', image: null, sex: 'f', birthday: 122, height: 160, age: 17 },
+    ]);
+    // 频率：TraitA 出现 2 次，TraitB 出现 1 次
+    await instance('character_traits').insert([
+      { character_id: 'cX1', trait_id: 'tA', trait_name: 'TraitA', group_id: 'i1', group_name: 'Hair' },
+      { character_id: 'cX2', trait_id: 'tA', trait_name: 'TraitA', group_id: 'i1', group_name: 'Hair' },
+      { character_id: 'cX3', trait_id: 'tB', trait_name: 'TraitB', group_id: 'i1', group_name: 'Hair' },
+    ]);
+    await loadTraitFrequency(instance);
+
+    const target = makeClue('c1', null, null);
+    target.traits = [{ traitId: 'tB', traitName: 'TraitB', groupId: 'i1', groupName: 'Hair' }];
+    const guess = makeClue('c2', null, null);
+    guess.traits = [
+      { traitId: 'tB', traitName: 'TraitB', groupId: 'i1', groupName: 'Hair' },
+      { traitId: 'tA', traitName: 'TraitA', groupId: 'i1', groupName: 'Hair' },
+      { traitId: 'tC', traitName: 'TraitC', groupId: 'i1', groupName: 'Hair' },
+    ];
+
+    const feedback = compareCharacterClues('c2', guess, target);
+    const hair = feedback.attributes.hair.parts!;
+    // 命中优先，再按频率降序：TraitB(命中) -> TraitA(频率2) -> TraitC(频率0)
+    expect(hair.map((part) => part.name)).toEqual(['TraitB', 'TraitA', 'TraitC']);
+    // 全部下发，由前端负责截断
+    expect(hair).toHaveLength(3);
   });
 
   it('lists characters with a display name', async () => {

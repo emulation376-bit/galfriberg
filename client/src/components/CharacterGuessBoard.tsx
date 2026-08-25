@@ -10,7 +10,11 @@ const GROUP_ORDER = [
   { key: 'hair', group: 'Hair' },
   { key: 'eyes', group: 'Eyes' },
 ] as const;
-const MAX_TAGS_PER_CELL = 5;
+const MAX_TAGS_PER_CELL = 4;
+/** 规则1：总数 <=5 全显示；>5 时从 4 开始截断，最多显示 5 个 cell（4 个值 + +N）。alwaysShown 用于发色等恒显示项 */
+function visibleCountFor(total: number, alwaysShown = 0): number {
+  return Math.max(total <= 5 ? total : MAX_TAGS_PER_CELL, alwaysShown);
+}
 const HAIR_COLOR_TRAITS = new Set([
   'Black', 'Blond', 'Blue', 'Brown', 'Green', 'Grey', 'Pink', 'Red', 'Violet', 'White',
 ]);
@@ -81,7 +85,7 @@ function Cell({
       ? attr.parts.filter((part) => !HAIR_COLOR_TRAITS.has(part.name))
       : attr.parts;
     const orderedParts = group === 'Hair' ? [...colorParts, ...otherParts] : attr.parts;
-    const visibleParts = orderedParts.slice(0, Math.max(MAX_TAGS_PER_CELL, colorParts.length));
+    const visibleParts = orderedParts.slice(0, visibleCountFor(attr.parts.length, colorParts.length));
     const omittedCount = attr.parts.length - visibleParts.length;
     return (
       <td className={staffCell ? 'staff-cell' : `character-cell ${cellClass}`}>
@@ -161,8 +165,8 @@ function CharacterGuessBoard({ guesses, names }: Props) {
               <td className="character-cell character-game-cell">
                 {(() => {
                   const parts = feedback.works.parts ?? feedback.gameTitles.map((title) => ({ name: title, matched: false }));
-                  const visible = parts.slice(0, MAX_TAGS_PER_CELL);
-                  const omitted = feedback.works.omitted ?? Math.max(0, parts.length - MAX_TAGS_PER_CELL);
+                  const visible = parts.slice(0, visibleCountFor(parts.length));
+                  const omitted = feedback.works.omitted ?? Math.max(0, parts.length - visible.length);
                   return visible.length ? (
                     <>
                       {visible.map((part, index) => (

@@ -134,4 +134,30 @@ describe('compareGuess', () => {
     const guess = makeGame({ id: 2, bgm_score: '8.6' as unknown as number });
     expect(compareGuess(guess, target).attributes.bgmScore.level).toBe('correct');
   });
+
+  it('tag 超过 5 个时从 4 开始截断并返回 +N，恰好 5 个时全显示', () => {
+    const target = makeGame({ id: 10, tags: ['A', 'B'] });
+    const guess6 = makeGame({ id: 2, tags: ['A', 'B', 'C', 'D', 'E', 'F'] });
+    const fb6 = compareGuess(guess6, target).attributes.tags;
+    expect(fb6.parts).toHaveLength(4);
+    expect(fb6.omitted).toBe(2);
+
+    const guess5 = makeGame({ id: 2, tags: ['A', 'B', 'C', 'D', 'E'] });
+    const fb5 = compareGuess(guess5, target).attributes.tags;
+    expect(fb5.parts).toHaveLength(5);
+    expect(fb5.omitted).toBeUndefined();
+  });
+
+  it('staff 超过 5 个时从 4 开始截断并返回 +N，恰好 5 个时全显示', () => {
+    const target = makeGame({ id: 10, scenario_writer: 'S1' });
+    const guess6 = makeGame({ id: 2, scenario_writer: 'S1、S2、S3、S4、S5、S6' });
+    const fb6 = compareGuess(guess6, target).attributes.scenarioWriter;
+    expect(fb6.parts).toHaveLength(4);
+    expect(fb6.omitted).toBe(2);
+
+    const guess5 = makeGame({ id: 2, scenario_writer: 'S1、S2、S3、S4、S5' });
+    const fb5 = compareGuess(guess5, target).attributes.scenarioWriter;
+    expect(fb5.parts).toHaveLength(5);
+    expect(fb5.omitted).toBeUndefined();
+  });
 });

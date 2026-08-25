@@ -8,6 +8,7 @@ import {
 } from './characterClues';
 import { AttributeFeedback } from '../types';
 import { staffFrequency } from './staffResolver';
+import { traitFrequency } from './traitResolver';
 import { characterImageUrl } from './characterImageService';
 import { cached } from './queryCache';
 
@@ -123,16 +124,39 @@ function compareTraits(guess: CharacterTraitClue[], target: CharacterTraitClue[]
     Eyes: 'eyes',
   } as const;
   const byGroup = (list: CharacterTraitClue[], group: string) =>
-    list
-      .filter((trait) => trait.groupName === group)
-      .map((trait) => trait.traitName);
+    list.filter((trait) => trait.groupName === group);
 
   const traits = {} as Pick<
     CharacterGuessFeedback['attributes'],
     'clothes' | 'role' | 'hair' | 'body' | 'eyes'
   >;
   for (const group of groups) {
-    traits[groupKey[group]] = compareSet(byGroup(guess, group), byGroup(target, group));
+    const guessTraits = byGroup(guess, group);
+    const targetNames = new Set(byGroup(target, group).map((trait) => trait.traitName));
+    // 展示优先级：命中必显示；其余按出现频率降序；再按原始顺序兜底。
+    // 全部下发，由前端按阈值截断（前端保证发色恒显示）。
+    const ranked = guessTraits
+      .map((trait, index) => ({
+        name: trait.traitName,
+        matched: targetNames.has(trait.traitName),
+        freq: traitFrequency(trait.traitId),
+        index,
+      }))
+      .sort((a, b) => {
+        if (a.matched !== b.matched) return a.matched ? -1 : 1;
+        if (b.freq !== a.freq) return b.freq - a.freq;
+        return a.index - b.index;
+      });
+    const parts = ranked.map(({ name, matched }) => ({ name, matched }));
+    const value = guessTraits.map((trait) => trait.traitName).join('、');
+    const guessSet = new Set(guessTraits.map((trait) => trait.traitName));
+    const level =
+      guessSet.size === targetNames.size && [...guessSet].every((name) => targetNames.has(name))
+        ? ('correct' as const)
+        : [...guessSet].some((name) => targetNames.has(name))
+          ? ('close' as const)
+          : ('wrong' as const);
+    traits[groupKey[group]] = { value, level, parts };
   }
   return traits;
 }

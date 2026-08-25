@@ -1,5 +1,6 @@
 import { GameTitle, GuessFeedback, AttributeFeedback, displayName } from '../types';
 import { identityStaff, displayStaff, resolveStaffName, staffFrequency } from './staffResolver';
+import { tagFrequency } from './tagResolver';
 
 const BGM_SCORE_CLOSE_RANGE = 0.3;
 const RELEASE_YEAR_CLOSE_RANGE = 3;
@@ -51,16 +52,34 @@ function companyAttr(guess: string, target: string): AttributeFeedback {
 }
 
 /** tag 锛堝銆佸垎闅旓級锛氶泦鍚堝畬鍏ㄧ浉鍚?correct锛屾湁浜ら泦 close锛屽惁鍒?wrong */
+/** tag （、分隔）：集合完全相同 correct，有交集 close，否则 wrong。
+ * 展示优先级：命中必显示；其余按出现频率降序；再按原始顺序兜底。
+ * 规则1：总数 <=5 全显示；>5 时从 4 开始截断，最多显示 5 个 cell（4 个值 + +N）。 */
 function tagAttr(guessTags: string[], targetTags: string[]): AttributeFeedback {
   const guessSet = new Set(guessTags);
   const targetSet = new Set(targetTags);
   const value = guessTags.join('\u3001');
-  const parts = [...guessSet].map((tag) => ({ name: tag, matched: targetSet.has(tag) }));
+  const ranked = [...guessSet]
+    .map((tag, index) => ({
+      name: tag,
+      matched: targetSet.has(tag),
+      freq: tagFrequency(tag),
+      index,
+    }))
+    .sort((a, b) => {
+      if (a.matched !== b.matched) return a.matched ? -1 : 1;
+      if (b.freq !== a.freq) return b.freq - a.freq;
+      return a.index - b.index;
+    });
+  const visibleCount = ranked.length <= 5 ? ranked.length : 4;
+  const visible = ranked.slice(0, visibleCount);
+  const omittedCount = ranked.length - visible.length;
+  const parts = visible.map(({ name, matched }) => ({ name, matched }));
   if (guessSet.size === targetSet.size && [...guessSet].every((tag) => targetSet.has(tag)))
-    return { value, level: 'correct', parts };
+    return { value, level: 'correct', parts, ...(omittedCount > 0 ? { omitted: omittedCount } : {}) };
   if ([...guessSet].some((tag) => targetSet.has(tag)))
-    return { value, level: 'close', parts };
-  return { value, level: 'wrong', parts };
+    return { value, level: 'close', parts, ...(omittedCount > 0 ? { omitted: omittedCount } : {}) };
+  return { value, level: 'wrong', parts, ...(omittedCount > 0 ? { omitted: omittedCount } : {}) };
 }
 
 /** 限制级：R18 / 全年龄，相同 correct 否则 wrong */
@@ -93,12 +112,10 @@ function staffAttr(guess: string, target: string): AttributeFeedback {
       if (b.freq !== a.freq) return b.freq - a.freq;
       return a.idx - b.idx;
     });
-  const matchedParts = ranked.filter((p) => p.matched);
-  const restParts = ranked.filter((p) => !p.matched);
-  const visible = [
-    ...matchedParts, // 命中必显示（不受阈值限制）
-    ...restParts.slice(0, Math.max(0, STAFF_VISIBLE_MAX - matchedParts.length)), // 其余至多补满 4 个
-  ];
+  // 规则1：总数 <=5 全显示；>5 时从 4 开始截断，最多显示 5 个 cell（4 个值 + +N）。
+  // 展示优先级保持：命中必显示；其余按出现频率降序。
+  const visibleCount = ranked.length <= 5 ? ranked.length : STAFF_VISIBLE_MAX;
+  const visible = ranked.slice(0, visibleCount);
   const omittedCount = ranked.length - visible.length;
   const parts = visible.map(({ name, matched }) => ({ name, matched }));
   if (guessSet.size === targetSet.size && [...guessSet].every((id) => targetSet.has(id)))

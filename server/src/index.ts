@@ -32,6 +32,8 @@ import {
 import { initGameCache } from './services/playerCache';
 import { initCharacterClueCache } from './services/characterClueCache';
 import { loadStaffAliases, loadStaffFrequency } from './services/staffResolver';
+import { loadTagFrequency } from './services/tagResolver';
+import { loadTraitFrequency } from './services/traitResolver';
 import { rateLimit } from './middleware/rateLimit';
 import { initMatchResultWorker } from './services/matchResultQueue';
 import powRoutes from './routes/pow';
@@ -102,6 +104,8 @@ async function main() {
   await initCharacterClueCache();
   await loadStaffAliases();
   await loadStaffFrequency();
+  await loadTagFrequency();
+  await loadTraitFrequency();
   const stopMatchWorker = redisReady ? await initMatchResultWorker() : async () => undefined;
 
   const app = express();
