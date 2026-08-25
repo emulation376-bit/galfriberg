@@ -1683,6 +1683,7 @@ describe.skipIf(!redisReady)('multiplayer socket integration', () => {
       // 每位玩家两次猜测之间需间隔 1.5 秒，A 上一次猜测刚结束，先等过冷却再猜。
       await new Promise((resolve) => setTimeout(resolve, 1700));
       const roundOverPromise = onceEvent(a, 'round:over');
+      const bRoundOver = onceEvent(b, 'round:over');
       const guessA2 = await emit(a, 'game:guess', {
         gameId: targetId,
         roundId: active!.round,
@@ -1690,10 +1691,13 @@ describe.skipIf(!redisReady)('multiplayer socket integration', () => {
       });
       expect(guessA2).toMatchObject({ cooldownMs: expect.any(Number) });
       const roundPayload = await roundOverPromise;
+      // 等 B 也收到 round:over（两个客户端事件到达有先后，避免竞态）
+      const bRoundPayload = await bRoundOver;
       expect(roundPayload.room.roundResult.winnerKeys).toEqual(
         expect.arrayContaining([`g:casual-a-${stamp}`, `g:casual-b-${stamp}`])
       );
       expect(roundPayload.room.status).toBe('round_over');
+      expect(bRoundPayload.room.status).toBe('round_over');
       expect(roundOver).toBe(true);
 
       // Host can end the casual room at any time
