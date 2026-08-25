@@ -31,8 +31,13 @@ compose() {
 }
 
 # 本地构建镜像（IMAGE 非 ghcr.io）时用 build；从 GHCR 拉取时用 pull。
+# IMAGE 优先取 shell 环境变量；未设置时回退读 .env，与 compose 实际使用的镜像保持一致。
 ensure_app_image() {
-  local image="${IMAGE:-galfriberg:latest}"
+  local image="${IMAGE:-}"
+  if [[ -z "${image}" && -f "${DEPLOY_DIR}/.env" ]]; then
+    image="$(grep -E '^IMAGE=' "${DEPLOY_DIR}/.env" | tail -1 | cut -d= -f2- || true)"
+  fi
+  image="${image:-galfriberg:latest}"
   if [[ "${image}" == ghcr.io/* ]]; then
     log "Pulling application images from ${image} ..."
     compose pull migrate app-1 app-2
