@@ -19,7 +19,9 @@
     "maintenance": "tsx src/maintenance.ts",
     "loadtest": "node scripts/loadtest.cjs",
     "benchmark:ws-compression": "node scripts/benchmark-websocket-compression.cjs",
-    "import-ymgal-character-images": "tsx src/db/importYmgalCharacterImages.ts"
+    "import-ymgal-character-images": "tsx src/db/importYmgalCharacterImages.ts",
+    "measure-mzh-coverage": "tsx src/db/measureMzhCoverage.ts",
+    "prune-missing-trait-characters": "tsx src/db/pruneMissingTraitCharacters.ts"
   },
   "dependencies": {
     "@socket.io/redis-adapter": "^8.3.0",

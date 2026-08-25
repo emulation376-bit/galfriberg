@@ -75,6 +75,8 @@ export interface VnStaffRow {
 export interface VoiceRow {
   cid: string;
   aid: number;
+  /** 是否主机移植版(console)声优；原版优先，仅当角色无原版声优时才回退使用 */
+  console: boolean;
 }
 
 export interface VoiceData {
@@ -158,13 +160,16 @@ export function loadVoiceData(dbDir: string): VoiceData {
     const vid = c[0];
     const cid = c[1];
     const aid = Number(c[2]);
+    // vn_seiyuu 第4列为备注，'console' 表示仅主机移植版声优；原版优先。
+    const note = (c[3] ?? '').trim().toLowerCase();
+    const isConsole = note === 'console';
     // 去重键必须含 vid：同一角色+声优会在多个 vn 出现（系列作/多版本共用角色），
     // 若只按 cid:aid 去重会把后续 vn 的声优行吞掉，导致那些作品声优列为空。
     const key = `${vid}:${cid}:${aid}`;
     if (seenVoiceInput.has(key)) continue;
     seenVoiceInput.add(key);
     if (!voiceByVn.has(vid)) voiceByVn.set(vid, []);
-    voiceByVn.get(vid)!.push({ cid, aid });
+    voiceByVn.get(vid)!.push({ cid, aid, console: isConsole });
   }
   return { charCidsByVn, voiceByVn };
 }
@@ -359,9 +364,16 @@ export function resolveStaffForVn(
   }
   const voices: string[] = [];
   const seenVoice = new Set<string>();
-  for (const { cid, aid } of voiceData.voiceByVn.get(vid) ?? []) {
-    if (!voiceData.charCidsByVn.get(vid)?.has(cid)) continue;
-    const alias = aliasByAid.get(aid);
+  // 按角色分组，优先取原版(non-console)声优；若某角色仅有主机版声优则回退使用。
+  const byCid = new Map<string, VoiceRow[]>();
+  for (const row of voiceData.voiceByVn.get(vid) ?? []) {
+    if (!voiceData.charCidsByVn.get(vid)?.has(row.cid)) continue;
+    if (!byCid.has(row.cid)) byCid.set(row.cid, []);
+    byCid.get(row.cid)!.push(row);
+  }
+  for (const rows of byCid.values()) {
+    const pick = rows.find((r) => !r.console) ?? rows[0];
+    const alias = aliasByAid.get(pick.aid);
     if (!alias || !alias.name) continue;
     const key = alias.staff_id;
     if (seenVoice.has(key)) continue;

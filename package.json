@@ -24,7 +24,9 @@
     "loadtest": "pnpm --filter server loadtest",
     "postinstall": "node scripts/install-better-sqlite3.mjs",
     "images:import": "pnpm --filter server import-ymgal-character-images",
-    "characters:seed": "python scripts/gen_characters_json.py"
+    "characters:seed": "python scripts/gen_characters_json.py",
+    "mzh:coverage": "pnpm --filter server measure-mzh-coverage",
+    "characters:prune": "pnpm --filter server prune-missing-trait-characters"
   },
   "devDependencies": {
     "concurrently": "^9.1.2"
