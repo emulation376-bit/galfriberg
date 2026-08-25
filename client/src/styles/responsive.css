@@ -15,7 +15,9 @@
    把视口压窄也保持左右布局,700px 以下实在放不下才堆叠 */
 @media (max-width: 960px) and (pointer: coarse), (max-width: 700px) {
   .boards { grid-template-columns: 1fr; }
-  .boards .player-board-self { order: 1; }
+  /* 自己的答题栏恒在最上方：用负数 order 保证排在所有默认 order(0) 的对手棋盘之前。
+     聚会模式对手棋盘不带 player-board-opponent 类，默认 order 为 0，旧的 order:1 会被它反超。 */
+  .boards .player-board-self { order: -1; }
   .boards .player-board-opponent { order: 2; }
 }
 
